@@ -115,8 +115,12 @@ impl ToLLVMDialect for ForOp {
             .get_parent_block()
             .expect("ForOp must be inside a block");
 
-        let exit_block =
-            rewriter.split_block(ctx, pre_header, OpInsertionPoint::BeforeOperation(self_op));
+        let exit_block = rewriter.split_block(
+            ctx,
+            pre_header,
+            OpInsertionPoint::BeforeOperation(self_op),
+            None,
+        );
 
         let iv_ty = iv.get_type(ctx);
         let to_llvm_ty = type_cast::<dyn ToLLVMType>(&**iv_ty.deref(ctx))
