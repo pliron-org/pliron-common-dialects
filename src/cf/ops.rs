@@ -216,7 +216,7 @@ impl ForOp {
                 .get_tail()
                 .expect("Region must have at least one block"),
         ));
-        op_inserter.insert_op(ctx, yield_op);
+        op_inserter.insert_op(ctx, &yield_op);
         op
     }
 
@@ -625,7 +625,7 @@ impl NDForOp {
                 .get_tail()
                 .expect("Region must have at least one block"),
         ));
-        op_inserter.insert_op(ctx, yield_op);
+        op_inserter.insert_op(ctx, &yield_op);
         op
     }
 }

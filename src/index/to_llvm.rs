@@ -51,7 +51,7 @@ impl ToLLVMDialect for IndexConstantOp {
             .clone();
         let llvm_attr = constant_index.to_llvm_attr(ctx)?;
         let new_constant_op = ConstantOp::new(ctx, llvm_attr);
-        rewriter.insert_op(ctx, new_constant_op);
+        rewriter.insert_op(ctx, &new_constant_op);
         rewriter.replace_operation(ctx, self.get_operation(), new_constant_op.get_operation());
         Ok(())
     }

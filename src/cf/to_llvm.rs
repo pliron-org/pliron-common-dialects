@@ -149,7 +149,7 @@ impl ToLLVMDialect for ForOp {
         let header_args = header.deref(ctx).arguments().collect::<Vec<_>>();
         let cmp = ICmpOp::new(ctx, ICmpPredicateAttr::ULT, header_iv, upper_bound);
         let cmp_result = cmp.get_result(ctx);
-        rewriter.insert_op(ctx, cmp);
+        rewriter.insert_op(ctx, &cmp);
         let cond_br = CondBrOp::new(
             ctx,
             cmp_result,
@@ -158,7 +158,7 @@ impl ToLLVMDialect for ForOp {
             exit_block,
             vec![],
         );
-        rewriter.insert_op(ctx, cond_br);
+        rewriter.insert_op(ctx, &cond_br);
 
         // Pre-header must branch to header with initial induction variable and iter args
         rewriter.set_insertion_point(OpInsertionPoint::AtBlockEnd(pre_header));
@@ -169,7 +169,7 @@ impl ToLLVMDialect for ForOp {
                 .chain(iter_vars_init.iter().cloned())
                 .collect(),
         );
-        rewriter.insert_op(ctx, pre_header_br);
+        rewriter.insert_op(ctx, &pre_header_br);
 
         // Set the for body exit block to to branch to the header
         // with the next induction variable and iter args from yield.
@@ -182,12 +182,12 @@ impl ToLLVMDialect for ForOp {
             step,
             IntegerOverflowFlagsAttr::default(),
         );
-        rewriter.append_op(ctx, iv_next);
+        rewriter.append_op(ctx, &iv_next);
         let branch_operands: Vec<_> = std::iter::once(iv_next.get_result(ctx))
             .chain(yield_op.deref(ctx).operands())
             .collect();
         let for_body_exit_br = BrOp::new(ctx, header, branch_operands);
-        rewriter.append_op(ctx, for_body_exit_br);
+        rewriter.append_op(ctx, &for_body_exit_br);
         rewriter.erase_operation(ctx, yield_op);
 
         // Inline the body of the ForOp, to after the header block.
@@ -319,7 +319,7 @@ impl ToLLVMDialect for NDForOp {
                     let mut rewriter =
                         ScopedRewriter::new(state.rewriter, inserter.get_insertion_point());
                     // The entry block will have just one operation, which is the previous ForOp we created.
-                    rewriter.append_op(ctx, state.last_created_for_op.unwrap());
+                    rewriter.append_op(ctx, &state.last_created_for_op.unwrap());
                     state.indices.push(idx);
                     vec![]
                 },
@@ -345,12 +345,12 @@ impl ToLLVMDialect for NDForOp {
                 branch_to_block,
                 state.indices.iter().rev().cloned().collect(),
             );
-            branch_inserter.append_op(ctx, branch);
+            branch_inserter.append_op(ctx, &branch);
         }
         // Finally replace the NDForOp with the last created ForOp, which is the outermost loop.
         state
             .rewriter
-            .append_op(ctx, state.last_created_for_op.unwrap());
+            .append_op(ctx, &state.last_created_for_op.unwrap());
         state.rewriter.replace_operation(
             ctx,
             self.get_operation(),
