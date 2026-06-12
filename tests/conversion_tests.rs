@@ -33,8 +33,8 @@ fn test_for_op_to_llvm_conversion() {
                     c0 = index.constant <index.constant 0> : index.index;
                     c10 = index.constant <index.constant 10> : index.index;
                     c1 = index.constant <index.constant 1> : index.index;
-                    init = llvm.constant <builtin.single 1.0> : builtin.fp32;
-                    inc = llvm.constant <builtin.single 3.5> : builtin.fp32;
+                    init = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                    inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
                     
                     result = cf.for c0 to c10 step c1 (init) {
                         ^entry(iv : index.index, iter_arg : builtin.fp32):
@@ -72,11 +72,11 @@ fn test_for_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                v10 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v11 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v12 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
-                init_v3 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
-                inc_v4 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
+                v10 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                v11 = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                v12 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
+                init_v3 = builtin.constant <builtin.single 1> : builtin.fp32  !5;
+                inc_v4 = builtin.constant <builtin.single 3.5> : builtin.fp32  !6;
                 llvm.br ^for_op_header_block5v1(v10, init_v3)
 
               ^for_op_header_block5v1(v13: builtin.integer i64, v14: builtin.fp32 ) !7:
@@ -172,10 +172,10 @@ fn test_ndfor_op_to_llvm_conversion() {
                     c10 = index.constant <index.constant 10> : index.index;
                     c11 = index.constant <index.constant 11> : index.index;
                     c1 = index.constant <index.constant 1> : index.index;
-                    c1_0 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64;
-                    accum = llvm.alloca [builtin.fp32 x c1_0] : llvm.ptr;
-                    f0 = llvm.constant <builtin.single 0.0> : builtin.fp32;
-                    f1 = llvm.constant <builtin.single 1.5> : builtin.fp32;
+                    c1_0 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                    accum = llvm.alloca [builtin.fp32 x c1_0] : llvm.ptr(0);
+                    f0 = builtin.constant <builtin.single 0.0> : builtin.fp32;
+                    f1 = builtin.constant <builtin.single 1.5> : builtin.fp32;
                     llvm.store *accum <- f0;
 
                     cf.nd_for [c0, c0] to [c10, c11] step [c1, c1] {
@@ -217,14 +217,14 @@ fn test_ndfor_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                v13 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v14 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v15 = llvm.constant <builtin.integer <11: i64>> : builtin.integer i64 !4;
-                v16 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !5;
-                c1_0_v4 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !6;
-                accum_v5 = llvm.alloca [builtin.fp32  x c1_0_v4]  : llvm.ptr  !7;
-                f0_v6 = llvm.constant <builtin.single 0> : builtin.fp32  !8;
-                f1_v7 = llvm.constant <builtin.single 1.5> : builtin.fp32  !9;
+                v13 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                v14 = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                v15 = builtin.constant <builtin.integer <11: i64>> : builtin.integer i64 !4;
+                v16 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !5;
+                c1_0_v4 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !6;
+                accum_v5 = llvm.alloca [builtin.fp32  x c1_0_v4]  : llvm.ptr (0) !7;
+                f0_v6 = builtin.constant <builtin.single 0> : builtin.fp32  !8;
+                f1_v7 = builtin.constant <builtin.single 1.5> : builtin.fp32  !9;
                 llvm.store *accum_v5 <- f0_v6  !10;
                 llvm.br ^for_op_header_block9v1(v13)
 

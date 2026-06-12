@@ -5,6 +5,7 @@ use pliron::{
     builtin::{
         attributes::IntegerAttr,
         op_interfaces::OneOpdInterface,
+        ops::ConstantOp,
         types::{IntegerType, Signedness},
     },
     context::Context,
@@ -18,7 +19,7 @@ use pliron::{
     result::Result,
     utils::apint::APInt,
 };
-use pliron_llvm::{ToLLVMDialect, ToLLVMType, ToLLVMTypeFn, ops::ConstantOp};
+use pliron_llvm::{ToLLVMDialect, ToLLVMType, ToLLVMTypeFn};
 
 use crate::index::{
     attributes::ConstantIndexAttr,
