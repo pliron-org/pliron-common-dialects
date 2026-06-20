@@ -19,7 +19,7 @@ use pliron::{
     operation::Operation,
     region::Region,
     result::Result,
-    r#type::{TypeObj, Typed, type_cast},
+    r#type::{TypeHandle, Typed, type_cast},
     value::Value,
 };
 use pliron_llvm::{
@@ -42,12 +42,12 @@ impl DialectConversion for CFToLLVM {
         op_impls::<dyn ToLLVMDialect>(&*Operation::get_op_dyn(op, ctx))
     }
 
-    fn can_convert_type(&self, ctx: &Context, ty: Ptr<TypeObj>) -> bool {
-        type_cast::<dyn ToLLVMType>(&**ty.deref(ctx)).is_some()
+    fn can_convert_type(&self, ctx: &Context, ty: TypeHandle) -> bool {
+        type_cast::<dyn ToLLVMType>(&*ty.deref(ctx)).is_some()
     }
 
-    fn convert_type(&mut self, ctx: &mut Context, ty: Ptr<TypeObj>) -> Result<Ptr<TypeObj>> {
-        let to_llvm_ty = type_cast::<dyn ToLLVMType>(&**ty.deref(ctx))
+    fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
+        let to_llvm_ty = type_cast::<dyn ToLLVMType>(&*ty.deref(ctx))
             .expect("Type with can_convert_type=true must implement ToLLVMType")
             .converter();
         to_llvm_ty(ty, ctx)
@@ -123,7 +123,7 @@ impl ToLLVMDialect for ForOp {
         );
 
         let iv_ty = iv.get_type(ctx);
-        let to_llvm_ty = type_cast::<dyn ToLLVMType>(&**iv_ty.deref(ctx))
+        let to_llvm_ty = type_cast::<dyn ToLLVMType>(&*iv_ty.deref(ctx))
             .ok_or_else(|| {
                 input_error!(self_op_loc.clone(), ForOpConversionErr::UnsupportedIVType)
             })?
