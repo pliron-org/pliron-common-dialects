@@ -72,24 +72,24 @@ fn test_for_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                v10 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v11 = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v12 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
-                init_v3 = builtin.constant <builtin.single 1> : builtin.fp32  !5;
-                inc_v4 = builtin.constant <builtin.single 3.5> : builtin.fp32  !6;
-                llvm.br ^for_op_header_block5v1(v10, init_v3)
+                v15 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                v16 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                v17 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
+                v13 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
+                v14 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
+                llvm.br ^for_op_header_block5v1(v15, v13)
 
-              ^for_op_header_block5v1(v13: builtin.integer i64, v14: builtin.fp32 ) !7:
-                v15 = llvm.icmp v13 <ULT> v11 : builtin.integer i1;
-                llvm.cond_br if v15 ^entry_block1v1(v13, v14) else ^entry_split_block4v1()
+              ^for_op_header_block5v1(v18: builtin.integer i64, v19: builtin.fp32 ) !7:
+                v20 = llvm.icmp v18 <ULT> v16 : builtin.integer i1;
+                llvm.cond_br if v20 ^entry_block1v1(v18, v19) else ^entry_split_block4v1()
 
               ^entry_block1v1(iv_v8: builtin.integer i64, iter_arg_v9: builtin.fp32 ) !8:
-                next_v7 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v9, inc_v4 : builtin.fp32  !9;
-                v16 = llvm.add iv_v8, v12 <{nsw=false,nuw=false}>: builtin.integer i64;
-                llvm.br ^for_op_header_block5v1(v16, next_v7)
+                next_v7 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v9, v14 : builtin.fp32  !9;
+                v21 = llvm.add iv_v8, v17 <{nsw=false,nuw=false}>: builtin.integer i64;
+                llvm.br ^for_op_header_block5v1(v21, next_v7)
 
               ^entry_split_block4v1():
-                llvm.return v14 !10
+                llvm.return v19 !10
             } !11
         } !12
 
@@ -99,8 +99,8 @@ fn test_for_op_to_llvm_conversion() {
         !2 = @[<in-memory>: line: 6, column: 21], []
         !3 = @[<in-memory>: line: 7, column: 21], []
         !4 = @[<in-memory>: line: 8, column: 21], []
-        !5 = @[<in-memory>: line: 9, column: 21], [builtin_debug_info = builtin.debug_info [init]]
-        !6 = @[<in-memory>: line: 10, column: 21], [builtin_debug_info = builtin.debug_info [inc]]
+        !5 = @[<in-memory>: line: 9, column: 21], []
+        !6 = @[<in-memory>: line: 10, column: 21], []
         !7 = @[<in-memory>: line: 12, column: 21], []
         !8 = @[<in-memory>: line: 13, column: 25], [builtin_debug_info = builtin.debug_info [iv, iter_arg]]
         !9 = @[<in-memory>: line: 14, column: 29], [builtin_debug_info = builtin.debug_info [next]]
@@ -125,20 +125,20 @@ fn test_for_op_to_llvm_conversion() {
           br label %for_op_header_block5v1
 
         for_op_header_block5v1:                           ; preds = %entry_block1v1, %entry_block2v1
-          %v13 = phi i64 [ 0, %entry_block2v1 ], [ %v16, %entry_block1v1 ]
-          %v14 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v7, %entry_block1v1 ]
-          %v15 = icmp ult i64 %v13, 10
-          br i1 %v15, label %entry_block1v1, label %entry_split_block4v1
+          %v18 = phi i64 [ 0, %entry_block2v1 ], [ %v21, %entry_block1v1 ]
+          %v19 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v7, %entry_block1v1 ]
+          %v20 = icmp ult i64 %v18, 10
+          br i1 %v20, label %entry_block1v1, label %entry_split_block4v1
 
         entry_block1v1:                                   ; preds = %for_op_header_block5v1
-          %iv_v8 = phi i64 [ %v13, %for_op_header_block5v1 ]
-          %iter_arg_v9 = phi float [ %v14, %for_op_header_block5v1 ]
+          %iv_v8 = phi i64 [ %v18, %for_op_header_block5v1 ]
+          %iter_arg_v9 = phi float [ %v19, %for_op_header_block5v1 ]
           %next_v7 = fadd fast float %iter_arg_v9, 3.500000e+00
-          %v16 = add i64 %iv_v8, 1
+          %v21 = add i64 %iv_v8, 1
           br label %for_op_header_block5v1
 
         entry_split_block4v1:                             ; preds = %for_op_header_block5v1
-          ret float %v14
+          ret float %v19
         }
     "#]]
     .assert_eq(&llvm_ir.to_string());
@@ -217,41 +217,41 @@ fn test_ndfor_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                v13 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v14 = builtin.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v15 = builtin.constant <builtin.integer <11: i64>> : builtin.integer i64 !4;
-                v16 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !5;
-                c1_0_v4 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !6;
-                accum_v5 = llvm.alloca [builtin.fp32  x c1_0_v4]  : llvm.ptr (0) !7;
-                f0_v6 = builtin.constant <builtin.single 0> : builtin.fp32  !8;
-                f1_v7 = builtin.constant <builtin.single 1.5> : builtin.fp32  !9;
-                llvm.store *accum_v5 <- f0_v6  !10;
-                llvm.br ^for_op_header_block9v1(v13)
+                v20 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                v21 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                v22 = llvm.constant <builtin.integer <11: i64>> : builtin.integer i64 !4;
+                v23 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !5;
+                v17 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !6;
+                accum_v5 = llvm.alloca [builtin.fp32  x v17]  : llvm.ptr (0) !7;
+                v18 = llvm.constant <builtin.single 0> : builtin.fp32  !8;
+                v19 = llvm.constant <builtin.single 1.5> : builtin.fp32  !9;
+                llvm.store *accum_v5 <- v18  !10;
+                llvm.br ^for_op_header_block9v1(v20)
 
-              ^for_op_header_block9v1(v22: builtin.integer i64) !11:
-                v23 = llvm.icmp v22 <ULT> v14 : builtin.integer i1;
-                llvm.cond_br if v23 ^entry_block5v1(v22) else ^entry_split_block8v1()
+              ^for_op_header_block9v1(v29: builtin.integer i64) !11:
+                v30 = llvm.icmp v29 <ULT> v21 : builtin.integer i1;
+                llvm.cond_br if v30 ^entry_block5v1(v29) else ^entry_split_block8v1()
 
-              ^entry_block5v1(iv_v18: builtin.integer i64) !12:
-                llvm.br ^for_op_header_block7v1(v13)
+              ^entry_block5v1(iv_v25: builtin.integer i64) !12:
+                llvm.br ^for_op_header_block7v1(v20)
 
-              ^for_op_header_block7v1(v19: builtin.integer i64):
-                v20 = llvm.icmp v19 <ULT> v15 : builtin.integer i1;
-                llvm.cond_br if v20 ^entry_block4v1(v19) else ^entry_split_block6v1()
+              ^for_op_header_block7v1(v26: builtin.integer i64):
+                v27 = llvm.icmp v26 <ULT> v22 : builtin.integer i1;
+                llvm.cond_br if v27 ^entry_block4v1(v26) else ^entry_split_block6v1()
 
-              ^entry_block4v1(iv_v17: builtin.integer i64) !13:
-                llvm.br ^entry_block1v1(iv_v18, iv_v17)
+              ^entry_block4v1(iv_v24: builtin.integer i64) !13:
+                llvm.br ^entry_block1v1(iv_v25, iv_v24)
 
               ^entry_block1v1(i_v10: builtin.integer i64, j_v11: builtin.integer i64) !14:
                 accum_val_v8 = llvm.load accum_v5  : builtin.fp32  !15;
-                sum_v9 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> accum_val_v8, f1_v7 : builtin.fp32  !16;
+                sum_v9 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> accum_val_v8, v19 : builtin.fp32  !16;
                 llvm.store *accum_v5 <- sum_v9  !17;
-                v21 = llvm.add iv_v17, v16 <{nsw=false,nuw=false}>: builtin.integer i64;
-                llvm.br ^for_op_header_block7v1(v21)
+                v28 = llvm.add iv_v24, v23 <{nsw=false,nuw=false}>: builtin.integer i64;
+                llvm.br ^for_op_header_block7v1(v28)
 
               ^entry_split_block6v1():
-                v24 = llvm.add iv_v18, v16 <{nsw=false,nuw=false}>: builtin.integer i64;
-                llvm.br ^for_op_header_block9v1(v24)
+                v31 = llvm.add iv_v25, v23 <{nsw=false,nuw=false}>: builtin.integer i64;
+                llvm.br ^for_op_header_block9v1(v31)
 
               ^entry_split_block8v1():
                 result_v12 = llvm.load accum_v5  : builtin.fp32  !18;
@@ -266,10 +266,10 @@ fn test_ndfor_op_to_llvm_conversion() {
         !3 = @[<in-memory>: line: 7, column: 21], []
         !4 = @[<in-memory>: line: 8, column: 21], []
         !5 = @[<in-memory>: line: 9, column: 21], []
-        !6 = @[<in-memory>: line: 10, column: 21], [builtin_debug_info = builtin.debug_info [c1_0]]
+        !6 = @[<in-memory>: line: 10, column: 21], []
         !7 = @[<in-memory>: line: 11, column: 21], [builtin_debug_info = builtin.debug_info [accum]]
-        !8 = @[<in-memory>: line: 12, column: 21], [builtin_debug_info = builtin.debug_info [f0]]
-        !9 = @[<in-memory>: line: 13, column: 21], [builtin_debug_info = builtin.debug_info [f1]]
+        !8 = @[<in-memory>: line: 12, column: 21], []
+        !9 = @[<in-memory>: line: 13, column: 21], []
         !10 = @[<in-memory>: line: 14, column: 21], []
         !11 = @[<in-memory>: line: 16, column: 21], []
         !12 = [builtin_debug_info = builtin.debug_info [iv]]
@@ -302,34 +302,34 @@ fn test_ndfor_op_to_llvm_conversion() {
           br label %for_op_header_block9v1
 
         for_op_header_block9v1:                           ; preds = %entry_split_block6v1, %entry_block2v1
-          %v22 = phi i64 [ 0, %entry_block2v1 ], [ %v24, %entry_split_block6v1 ]
-          %v23 = icmp ult i64 %v22, 10
-          br i1 %v23, label %entry_block5v1, label %entry_split_block8v1
+          %v29 = phi i64 [ 0, %entry_block2v1 ], [ %v31, %entry_split_block6v1 ]
+          %v30 = icmp ult i64 %v29, 10
+          br i1 %v30, label %entry_block5v1, label %entry_split_block8v1
 
         entry_block5v1:                                   ; preds = %for_op_header_block9v1
-          %iv_v18 = phi i64 [ %v22, %for_op_header_block9v1 ]
+          %iv_v25 = phi i64 [ %v29, %for_op_header_block9v1 ]
           br label %for_op_header_block7v1
 
         for_op_header_block7v1:                           ; preds = %entry_block1v1, %entry_block5v1
-          %v19 = phi i64 [ 0, %entry_block5v1 ], [ %v21, %entry_block1v1 ]
-          %v20 = icmp ult i64 %v19, 11
-          br i1 %v20, label %entry_block4v1, label %entry_split_block6v1
+          %v26 = phi i64 [ 0, %entry_block5v1 ], [ %v28, %entry_block1v1 ]
+          %v27 = icmp ult i64 %v26, 11
+          br i1 %v27, label %entry_block4v1, label %entry_split_block6v1
 
         entry_block4v1:                                   ; preds = %for_op_header_block7v1
-          %iv_v17 = phi i64 [ %v19, %for_op_header_block7v1 ]
+          %iv_v24 = phi i64 [ %v26, %for_op_header_block7v1 ]
           br label %entry_block1v1
 
         entry_block1v1:                                   ; preds = %entry_block4v1
-          %i_v10 = phi i64 [ %iv_v18, %entry_block4v1 ]
-          %j_v11 = phi i64 [ %iv_v17, %entry_block4v1 ]
+          %i_v10 = phi i64 [ %iv_v25, %entry_block4v1 ]
+          %j_v11 = phi i64 [ %iv_v24, %entry_block4v1 ]
           %accum_val_v8 = load float, ptr %accum_v5, align 4
           %sum_v9 = fadd fast float %accum_val_v8, 1.500000e+00
           store float %sum_v9, ptr %accum_v5, align 4
-          %v21 = add i64 %iv_v17, 1
+          %v28 = add i64 %iv_v24, 1
           br label %for_op_header_block7v1
 
         entry_split_block6v1:                             ; preds = %for_op_header_block7v1
-          %v24 = add i64 %iv_v18, 1
+          %v31 = add i64 %iv_v25, 1
           br label %for_op_header_block9v1
 
         entry_split_block8v1:                             ; preds = %for_op_header_block9v1
