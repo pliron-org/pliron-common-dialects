@@ -67,29 +67,29 @@ fn test_for_op_to_llvm_conversion() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block3v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_for: llvm.func <builtin.fp32 () variadic = false>
               [] 
             {
               ^entry_block2v1() !1:
-                v15 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v16 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v17 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
-                v13 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
-                v14 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
-                llvm.br ^for_op_header_block5v1(v15, v13)
+                v14 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                v15 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                v16 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
+                v12 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
+                v13 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
+                llvm.br ^for_op_header_block5v1(v14, v12)
 
-              ^for_op_header_block5v1(v18: builtin.integer i64, v19: builtin.fp32 ) !7:
-                v20 = llvm.icmp v18 <ULT> v16 : builtin.integer i1;
-                llvm.cond_br if v20 ^entry_block1v1(v18, v19) else ^entry_split_block4v1()
+              ^for_op_header_block5v1(v17: builtin.integer i64, v18: builtin.fp32 ) !7:
+                v19 = llvm.icmp v17 <ULT> v15 : builtin.integer i1;
+                llvm.cond_br if v19 ^entry_block3v1(v17, v18) else ^entry_split_block4v1()
 
-              ^entry_block1v1(iv_v8: builtin.integer i64, iter_arg_v9: builtin.fp32 ) !8:
-                next_v7 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v9, v14 : builtin.fp32  !9;
-                v21 = llvm.add iv_v8, v17 <{nsw=false,nuw=false}>: builtin.integer i64;
-                llvm.br ^for_op_header_block5v1(v21, next_v7)
+              ^entry_block3v1(iv_v6: builtin.integer i64, iter_arg_v7: builtin.fp32 ) !8:
+                next_v8 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v7, v13 : builtin.fp32  !9;
+                v20 = llvm.add iv_v6, v16 <{nsw=false,nuw=false}>: builtin.integer i64;
+                llvm.br ^for_op_header_block5v1(v20, next_v8)
 
               ^entry_split_block4v1():
-                llvm.return v19 !10
+                llvm.return v18 !10
             } !11
         } !12
 
@@ -124,21 +124,21 @@ fn test_for_op_to_llvm_conversion() {
         entry_block2v1:
           br label %for_op_header_block5v1
 
-        for_op_header_block5v1:                           ; preds = %entry_block1v1, %entry_block2v1
-          %v18 = phi i64 [ 0, %entry_block2v1 ], [ %v21, %entry_block1v1 ]
-          %v19 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v7, %entry_block1v1 ]
-          %v20 = icmp ult i64 %v18, 10
-          br i1 %v20, label %entry_block1v1, label %entry_split_block4v1
+        for_op_header_block5v1:                           ; preds = %entry_block3v1, %entry_block2v1
+          %v17 = phi i64 [ 0, %entry_block2v1 ], [ %v20, %entry_block3v1 ]
+          %v18 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v8, %entry_block3v1 ]
+          %v19 = icmp ult i64 %v17, 10
+          br i1 %v19, label %entry_block3v1, label %entry_split_block4v1
 
-        entry_block1v1:                                   ; preds = %for_op_header_block5v1
-          %iv_v8 = phi i64 [ %v18, %for_op_header_block5v1 ]
-          %iter_arg_v9 = phi float [ %v19, %for_op_header_block5v1 ]
-          %next_v7 = fadd fast float %iter_arg_v9, 3.500000e+00
-          %v21 = add i64 %iv_v8, 1
+        entry_block3v1:                                   ; preds = %for_op_header_block5v1
+          %iv_v6 = phi i64 [ %v17, %for_op_header_block5v1 ]
+          %iter_arg_v7 = phi float [ %v18, %for_op_header_block5v1 ]
+          %next_v8 = fadd fast float %iter_arg_v7, 3.500000e+00
+          %v20 = add i64 %iv_v6, 1
           br label %for_op_header_block5v1
 
         entry_split_block4v1:                             ; preds = %for_op_header_block5v1
-          ret float %v19
+          ret float %v18
         }
     "#]]
     .assert_eq(&llvm_ir.to_string());
@@ -212,7 +212,7 @@ fn test_ndfor_op_to_llvm_conversion() {
     expect![[r#"
         builtin.module @test_module 
         {
-          ^entry_block3v1() !0:
+          ^entry_block1v1() !0:
             llvm.func @test_ndfor: llvm.func <builtin.fp32 () variadic = false>
               [] 
             {
@@ -240,12 +240,12 @@ fn test_ndfor_op_to_llvm_conversion() {
                 llvm.cond_br if v27 ^entry_block4v1(v26) else ^entry_split_block6v1()
 
               ^entry_block4v1(iv_v24: builtin.integer i64) !13:
-                llvm.br ^entry_block1v1(iv_v25, iv_v24)
+                llvm.br ^entry_block3v1(iv_v25, iv_v24)
 
-              ^entry_block1v1(i_v10: builtin.integer i64, j_v11: builtin.integer i64) !14:
-                accum_val_v8 = llvm.load accum_v5  : builtin.fp32  !15;
-                sum_v9 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> accum_val_v8, v19 : builtin.fp32  !16;
-                llvm.store *accum_v5 <- sum_v9  !17;
+              ^entry_block3v1(i_v8: builtin.integer i64, j_v9: builtin.integer i64) !14:
+                accum_val_v10 = llvm.load accum_v5  : builtin.fp32  !15;
+                sum_v11 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> accum_val_v10, v19 : builtin.fp32  !16;
+                llvm.store *accum_v5 <- sum_v11  !17;
                 v28 = llvm.add iv_v24, v23 <{nsw=false,nuw=false}>: builtin.integer i64;
                 llvm.br ^for_op_header_block7v1(v28)
 
@@ -310,21 +310,21 @@ fn test_ndfor_op_to_llvm_conversion() {
           %iv_v25 = phi i64 [ %v29, %for_op_header_block9v1 ]
           br label %for_op_header_block7v1
 
-        for_op_header_block7v1:                           ; preds = %entry_block1v1, %entry_block5v1
-          %v26 = phi i64 [ 0, %entry_block5v1 ], [ %v28, %entry_block1v1 ]
+        for_op_header_block7v1:                           ; preds = %entry_block3v1, %entry_block5v1
+          %v26 = phi i64 [ 0, %entry_block5v1 ], [ %v28, %entry_block3v1 ]
           %v27 = icmp ult i64 %v26, 11
           br i1 %v27, label %entry_block4v1, label %entry_split_block6v1
 
         entry_block4v1:                                   ; preds = %for_op_header_block7v1
           %iv_v24 = phi i64 [ %v26, %for_op_header_block7v1 ]
-          br label %entry_block1v1
+          br label %entry_block3v1
 
-        entry_block1v1:                                   ; preds = %entry_block4v1
-          %i_v10 = phi i64 [ %iv_v25, %entry_block4v1 ]
-          %j_v11 = phi i64 [ %iv_v24, %entry_block4v1 ]
-          %accum_val_v8 = load float, ptr %accum_v5, align 4
-          %sum_v9 = fadd fast float %accum_val_v8, 1.500000e+00
-          store float %sum_v9, ptr %accum_v5, align 4
+        entry_block3v1:                                   ; preds = %entry_block4v1
+          %i_v8 = phi i64 [ %iv_v25, %entry_block4v1 ]
+          %j_v9 = phi i64 [ %iv_v24, %entry_block4v1 ]
+          %accum_val_v10 = load float, ptr %accum_v5, align 4
+          %sum_v11 = fadd fast float %accum_val_v10, 1.500000e+00
+          store float %sum_v11, ptr %accum_v5, align 4
           %v28 = add i64 %iv_v24, 1
           br label %for_op_header_block7v1
 
@@ -351,4 +351,53 @@ fn test_ndfor_op_to_llvm_conversion() {
     let result = f();
     // The loop iterates 10 * 11 = 110 times, and each time it adds 1.5 to the accumulator, so the final result should be 165.0
     assert_eq!(result, 165.0);
+}
+
+// Regression test: a nested [ForOp]'s `iter_args_init` may itself be an
+// argument of the enclosing (outer) `ForOp`'s entry block, which is still
+// being parsed at that point. The inner op's result type must still be
+// resolved correctly (not fall back to `builtin.unit`).
+#[test]
+fn test_nested_for_op_iter_arg_result_type() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+      builtin.module @test_module {
+        ^entry():
+          llvm.func @test_nested_for: llvm.func <builtin.fp32 () variadic = false> [] {
+            ^entry():
+              c0 = index.constant <index.constant 0> : index.index;
+              c10 = index.constant <index.constant 10> : index.index;
+              c1 = index.constant <index.constant 1> : index.index;
+              init = builtin.constant <builtin.single 1.0> : builtin.fp32;
+              inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+
+              outer = cf.for c0 to c10 step c1 (init) {
+                ^entry(iv : index.index, iter_arg : builtin.fp32):
+                    inner = cf.for c0 to c10 step c1 (iter_arg) {
+                        ^entry(iv2 : index.index, iter_arg2 : builtin.fp32):
+                            next2 = llvm.fadd <FAST> iter_arg2, inc : builtin.fp32;
+                            cf.yield next2
+                    };
+                    cf.yield inner
+              };
+
+              llvm.return outer
+          }
+      }
+      "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
 }
