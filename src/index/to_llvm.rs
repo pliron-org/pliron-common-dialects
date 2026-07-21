@@ -17,9 +17,10 @@ use pliron::{
     },
     op::Op,
     result::Result,
+    r#type::TypeHandle,
     utils::apint::APInt,
 };
-use pliron_llvm::{ToLLVMDialect, ToLLVMType, ToLLVMTypeFn};
+use pliron_llvm::{ToLLVMDialect, ToLLVMType};
 
 use crate::index::{
     attributes::ConstantIndexAttr,
@@ -29,12 +30,10 @@ use crate::index::{
 
 #[type_interface_impl]
 impl ToLLVMType for IndexType {
-    fn converter(&self) -> ToLLVMTypeFn {
-        |_ty, ctx| {
-            // Convert IndexType to i64 in LLVM dialect.
-            let int_ty = IntegerType::get(ctx, 64, Signedness::Signless);
-            Ok(int_ty.into())
-        }
+    fn convert(&self, ctx: &Context) -> Result<TypeHandle> {
+        // Convert IndexType to i64 in LLVM dialect.
+        let int_ty = IntegerType::get(ctx, 64, Signedness::Signless);
+        Ok(int_ty.into())
     }
 }
 

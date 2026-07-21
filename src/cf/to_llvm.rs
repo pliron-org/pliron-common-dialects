@@ -47,10 +47,9 @@ impl DialectConversion for CFToLLVM {
     }
 
     fn convert_type(&mut self, ctx: &mut Context, ty: TypeHandle) -> Result<TypeHandle> {
-        let to_llvm_ty = type_cast::<dyn ToLLVMType>(&*ty.deref(ctx))
+        type_cast::<dyn ToLLVMType>(&*ty.deref(ctx))
             .expect("Type with can_convert_type=true must implement ToLLVMType")
-            .converter();
-        to_llvm_ty(ty, ctx)
+            .convert(ctx)
     }
 
     fn rewrite(
@@ -123,12 +122,11 @@ impl ToLLVMDialect for ForOp {
         );
 
         let iv_ty = iv.get_type(ctx);
-        let to_llvm_ty = type_cast::<dyn ToLLVMType>(&*iv_ty.deref(ctx))
+        let iv_ty = type_cast::<dyn ToLLVMType>(&*iv_ty.deref(ctx))
             .ok_or_else(|| {
                 input_error!(self_op_loc.clone(), ForOpConversionErr::UnsupportedIVType)
             })?
-            .converter();
-        let iv_ty = to_llvm_ty(iv_ty, ctx)?;
+            .convert(ctx)?;
         // We change the type of the induction variable to an LLVM integer type.
         rewriter.set_value_type(ctx, iv, iv_ty);
 
