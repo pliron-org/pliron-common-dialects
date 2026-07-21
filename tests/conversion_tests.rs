@@ -399,5 +399,36 @@ fn test_nested_for_op_iter_arg_result_type() {
 
     let parsed_op = parsed.expect_ok(ctx);
     let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_nested_for: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                c0_v0 = index.constant <index.constant 0> : index.index  !2;
+                c10_v1 = index.constant <index.constant 10> : index.index  !3;
+                c1_v2 = index.constant <index.constant 1> : index.index  !4;
+                init_v3 = builtin.constant <builtin.single 1> : builtin.fp32  !5;
+                inc_v4 = builtin.constant <builtin.single 3.5> : builtin.fp32  !6;
+                outer_v5 = cf.for c0_v0 to c10_v1 step c1_v2 (init_v3) 
+                {
+                  ^entry_block3v1(iv_v6: index.index , iter_arg_v7: builtin.fp32 ) !7:
+                    inner_v8 = cf.for c0_v0 to c10_v1 step c1_v2 (iter_arg_v7) 
+                    {
+                      ^entry_block4v1(iv2_v9: index.index , iter_arg2_v10: builtin.fp32 ) !8:
+                        next2_v11 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg2_v10, inc_v4 : builtin.fp32  !9;
+                        cf.yield next2_v11 !10
+                    }
+         !11;
+                    cf.yield inner_v8 !12
+                }
+         !13;
+                llvm.return outer_v5 !14
+            } !15
+        }"#]].assert_eq(&module_op.disp(ctx).to_string());
+
     verify_op(&module_op, ctx).expect_ok(ctx);
 }

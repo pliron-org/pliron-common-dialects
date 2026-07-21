@@ -17,7 +17,7 @@ use pliron::{
     },
     irfmt::{
         parsers::{delimited_list_parser, process_parsed_ssa_defs, spaced, ssa_opd_parser},
-        printers::list_with_sep,
+        printers::{iter_with_sep, list_with_sep},
     },
     linked_list::ContainsLinkedList,
     location::Location,
@@ -270,6 +270,11 @@ impl Printable for ForOp {
         state: &pliron::printable::State,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
+        let op = self.get_operation().deref(ctx);
+        if op.get_num_results() > 0 {
+            let results = iter_with_sep(op.results(), ListSeparator::CharSpace(','));
+            write!(f, "{} = ", results.disp(ctx))?;
+        }
         let iter_args_init = self.get_iter_args_init(ctx);
         writeln!(
             f,
