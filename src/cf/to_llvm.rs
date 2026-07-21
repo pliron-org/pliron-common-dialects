@@ -2,10 +2,12 @@
 
 use pliron::{
     basic_block::BasicBlock,
-    builtin::op_interfaces::{OneRegionInterface, OneResultInterface},
+    builtin::{
+        op_interfaces::{OneRegionInterface, OneResultInterface},
+        types::{IntegerType, Signedness},
+    },
     context::{Context, Ptr},
     derive::op_interface_impl,
-    input_error,
     irbuild::{
         dialect_conversion::{DialectConversion, DialectConversionRewriter, OperandsInfo},
         inserter::{BlockInsertionPoint, IRInserter, Inserter, OpInsertionPoint},
@@ -86,7 +88,7 @@ pub enum ForOpConversionErr {
 //  ^for_body_exit(...):
 //     ...
 //     %yield_operands, ... = ... # remove `yield` op
-//     %iv_next = llvm.add %iv, 1
+//     %iv_next = llvm.add %iv, %step
 //     llvm.br ^header(%iv_next, %yield_operands, ...)
 //
 //  ^exit:
@@ -121,13 +123,7 @@ impl ToLLVMDialect for ForOp {
             None,
         );
 
-        let iv_ty = iv.get_type(ctx);
-        let iv_ty = type_cast::<dyn ToLLVMType>(&*iv_ty.deref(ctx))
-            .ok_or_else(|| {
-                input_error!(self_op_loc.clone(), ForOpConversionErr::UnsupportedIVType)
-            })?
-            .convert(ctx)?;
-        // We change the type of the induction variable to an LLVM integer type.
+        let iv_ty: TypeHandle = IntegerType::get(ctx, 64, Signedness::Signless).into();
         rewriter.set_value_type(ctx, iv, iv_ty);
 
         // We don't convert iter_var_types here because they are just passed
@@ -171,15 +167,10 @@ impl ToLLVMDialect for ForOp {
 
         // Set the for body exit block to to branch to the header
         // with the next induction variable and iter args from yield.
-        let for_body_entry_iv = for_body_entry.deref(ctx).get_argument(0);
         let yield_op = self.get_yield(ctx).get_operation();
         rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(yield_op));
-        let iv_next = AddOp::new_with_overflow_flag(
-            ctx,
-            for_body_entry_iv,
-            step,
-            IntegerOverflowFlagsAttr::default(),
-        );
+        let iv_next =
+            AddOp::new_with_overflow_flag(ctx, iv, step, IntegerOverflowFlagsAttr::default());
         rewriter.append_op(ctx, &iv_next);
         let branch_operands: Vec<_> = std::iter::once(iv_next.get_result(ctx))
             .chain(yield_op.deref(ctx).operands())
