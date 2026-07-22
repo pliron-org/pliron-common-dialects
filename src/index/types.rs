@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-common-dialects contributors
+
 //! Index type
 
 use pliron::derive::pliron_type;

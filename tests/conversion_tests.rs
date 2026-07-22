@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) The pliron-common-dialects contributors
+
 //! Tests for verifying the correctness of [CFToLLVM] rewrite patterns
 //! that convert control flow operations to their LLVM IR counterparts.
 
