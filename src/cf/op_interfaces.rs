@@ -5,7 +5,7 @@
 
 use pliron::{
     basic_block::BasicBlock,
-    builtin::op_interfaces::{IsTerminatorInterface, OneRegionInterface},
+    builtin::op_interfaces::{BranchOpInterface, IsTerminatorInterface, OneRegionInterface},
     context::{Context, Ptr},
     derive::op_interface,
     linked_list::ContainsLinkedList,
@@ -32,6 +32,8 @@ pub enum YieldingRegionVerifyErr {
     RegionEmpty,
     #[error("Last operation in exit block is not a YieldingOp")]
     LastOpNotYield,
+    #[error("Terminator of a non-exit block must implement BranchOpInterface")]
+    NonExitBlockBadTerminator,
 }
 
 /// An [Operation] with a single [Region](pliron::region::Region) that
@@ -90,6 +92,22 @@ pub trait YieldingRegion<YieldOp: YieldingOp>: OneRegionInterface {
         if Operation::get_op::<YieldOp>(yield_op, ctx).is_none() {
             return verify_err!(op.loc(ctx), YieldingRegionVerifyErr::LastOpNotYield);
         }
+
+        // Every non-exit block's terminator must implement [BranchOpInterface],
+        // so that control flow inside this region is always well understood.
+        for block in region.iter(ctx).filter(|&block| block != exit_block) {
+            let Some(terminator) = block.deref(ctx).get_terminator(ctx) else {
+                continue;
+            };
+            let terminator_op = Operation::get_op_dyn(terminator, ctx);
+            if op_cast::<dyn BranchOpInterface>(terminator_op.as_ref()).is_none() {
+                return verify_err!(
+                    op.loc(ctx),
+                    YieldingRegionVerifyErr::NonExitBlockBadTerminator
+                );
+            }
+        }
+
         Ok(())
     }
 }

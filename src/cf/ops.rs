@@ -5,13 +5,18 @@
 
 use pliron::{
     basic_block::BasicBlock,
-    builtin::op_interfaces::{
-        IsTerminatorInterface, NResultsInterface, OneRegionInterface, OperandSegmentInterface,
+    builtin::{
+        op_interfaces::{
+            BranchOpInterface, IsTerminatorInterface, NResultsInterface, NSuccsInterface,
+            OneRegionInterface, OneSuccInterface, OperandSegmentInterface,
+            SingleBlockRegionInterface,
+        },
+        types::{IntegerType, Signedness},
     },
     common_traits::{Named, Verify},
-    context::Context,
+    context::{Context, Ptr},
     debug_info::set_block_arg_name,
-    derive::pliron_op,
+    derive::{op_interface_impl, pliron_op},
     identifier::Identifier,
     input_err,
     irbuild::{
@@ -19,7 +24,10 @@ use pliron::{
         listener::DummyListener,
     },
     irfmt::{
-        parsers::{delimited_list_parser, process_parsed_ssa_defs, spaced, ssa_opd_parser},
+        parsers::{
+            block_opd_parser, delimited_list_parser, process_parsed_ssa_defs, spaced,
+            ssa_opd_parser, type_parser,
+        },
         printers::{iter_with_sep, list_with_sep},
     },
     linked_list::ContainsLinkedList,
@@ -29,7 +37,7 @@ use pliron::{
     parsable::{IntoParseResult, Parsable},
     printable::{ListSeparator, Printable},
     region::Region,
-    r#type::Typed,
+    r#type::{TypeHandle, Typed},
     value::Value,
     verify_err,
 };
@@ -109,6 +117,236 @@ impl Verify for YieldOp {
     }
 }
 
+/// Unconditional branch.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `dest_opds` | (variadic) values forwarded to `dest` as block arguments |
+///
+/// ## Successor(s)
+/// | successor | description |
+/// |-----|-------|
+/// | `dest` | target block |
+#[pliron_op(
+    name = "cf.br",
+    format = "succ($0) `(` operands(CharSpace(`,`)) `)`",
+    interfaces = [
+        IsTerminatorInterface,
+        NResultsInterface<0>,
+        NSuccsInterface<1>,
+        OneSuccInterface,
+    ],
+    verifier = "succ",
+)]
+pub struct BrOp;
+
+impl BrOp {
+    /// Creates a new `BrOp` branching to `dest`, forwarding `dest_opds` as its block arguments.
+    pub fn new(ctx: &mut Context, dest: Ptr<BasicBlock>, dest_opds: Vec<Value>) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![],
+            dest_opds,
+            vec![dest],
+            0,
+        );
+        BrOp { op }
+    }
+}
+
+#[op_interface_impl]
+impl BranchOpInterface for BrOp {
+    fn successor_operands(&self, ctx: &Context, succ_idx: usize) -> Vec<Value> {
+        assert!(succ_idx == 0, "BrOp has exactly one successor");
+        self.get_operation().deref(ctx).operands().collect()
+    }
+
+    fn add_successor_operand(&self, ctx: &mut Context, succ_idx: usize, operand: Value) -> usize {
+        assert!(succ_idx == 0, "BrOp has exactly one successor");
+        Operation::push_operand(self.get_operation(), ctx, operand)
+    }
+
+    fn remove_successor_operand(
+        &self,
+        ctx: &mut Context,
+        succ_idx: usize,
+        opd_idx: usize,
+    ) -> Value {
+        assert!(succ_idx == 0, "BrOp has exactly one successor");
+        Operation::remove_operand(self.get_operation(), ctx, opd_idx)
+    }
+}
+
+/// Conditional branch.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `condition` | signless 1-bit integer |
+/// | `true_dest_opds` | (variadic) values forwarded to `true_dest` as block arguments |
+/// | `false_dest_opds` | (variadic) values forwarded to `false_dest` as block arguments |
+///
+/// ## Successor(s)
+/// | successor | description |
+/// |-----|-------|
+/// | `true_dest` | target block when `condition` is true |
+/// | `false_dest` | target block when `condition` is false |
+#[pliron_op(
+    name = "cf.cond_br",
+    interfaces = [
+        IsTerminatorInterface,
+        NResultsInterface<0>,
+        NSuccsInterface<2>,
+    ],
+    operands = (condition, true_dest_opds, false_dest_opds),
+)]
+pub struct CondBrOp;
+
+impl CondBrOp {
+    /// Creates a new `CondBrOp`.
+    pub fn new(
+        ctx: &mut Context,
+        condition: Value,
+        true_dest: Ptr<BasicBlock>,
+        true_dest_opds: Vec<Value>,
+        false_dest: Ptr<BasicBlock>,
+        false_dest_opds: Vec<Value>,
+    ) -> Self {
+        let (operands, segments) =
+            Self::compute_segment_sizes(vec![vec![condition], true_dest_opds, false_dest_opds]);
+
+        let op = CondBrOp {
+            op: Operation::new(
+                ctx,
+                Self::get_concrete_op_info(),
+                vec![],
+                operands,
+                vec![true_dest, false_dest],
+                0,
+            ),
+        };
+        op.set_operand_segment_sizes(ctx, segments);
+        op
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum CondBrOpVerifyErr {
+    #[error("CondBrOp condition operand must be a signless 1-bit integer (i1)")]
+    IncorrectConditionType,
+}
+
+impl Verify for CondBrOp {
+    fn verify(&self, ctx: &Context) -> pliron::result::Result<()> {
+        let condition_ty = self.get_operand_condition(ctx).get_type(ctx);
+        let condition_ty = condition_ty.deref(ctx);
+        let Some(condition_int_ty) = condition_ty.downcast_ref::<IntegerType>() else {
+            return verify_err!(self.loc(ctx), CondBrOpVerifyErr::IncorrectConditionType);
+        };
+        if condition_int_ty.width() != 1 || condition_int_ty.signedness() != Signedness::Signless {
+            return verify_err!(self.loc(ctx), CondBrOpVerifyErr::IncorrectConditionType);
+        }
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl OperandSegmentInterface for CondBrOp {}
+
+#[op_interface_impl]
+impl BranchOpInterface for CondBrOp {
+    fn successor_operands(&self, ctx: &Context, succ_idx: usize) -> Vec<Value> {
+        assert!(
+            succ_idx == 0 || succ_idx == 1,
+            "CondBrOp has exactly two successors"
+        );
+        // Skip the first segment, which is the condition.
+        self.get_segment(ctx, succ_idx + 1)
+    }
+
+    fn add_successor_operand(&self, ctx: &mut Context, succ_idx: usize, operand: Value) -> usize {
+        self.push_to_segment(ctx, succ_idx + 1, operand)
+    }
+
+    fn remove_successor_operand(
+        &self,
+        ctx: &mut Context,
+        succ_idx: usize,
+        opd_idx: usize,
+    ) -> Value {
+        self.remove_from_segment(ctx, succ_idx + 1, opd_idx)
+    }
+}
+
+impl Printable for CondBrOp {
+    fn fmt(
+        &self,
+        ctx: &Context,
+        _state: &pliron::printable::State,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        let op = self.get_operation().deref(ctx);
+        let condition = op.get_operand(0);
+        let true_dest_opds = self.successor_operands(ctx, 0);
+        let false_dest_opds = self.successor_operands(ctx, 1);
+        write!(
+            f,
+            "{} if {} ^{}({}) else ^{}({})",
+            Self::get_opid_static(),
+            condition.disp(ctx),
+            op.get_successor(0).deref(ctx).unique_name(ctx),
+            iter_with_sep(true_dest_opds.iter(), ListSeparator::CharSpace(',')).disp(ctx),
+            op.get_successor(1).deref(ctx).unique_name(ctx),
+            iter_with_sep(false_dest_opds.iter(), ListSeparator::CharSpace(',')).disp(ctx),
+        )
+    }
+}
+
+impl Parsable for CondBrOp {
+    type Arg = Vec<(Identifier, Location)>;
+    type Parsed = OpObj;
+
+    fn parse<'a>(
+        state_stream: &mut pliron::parsable::StateStream<'a>,
+        results: Self::Arg,
+    ) -> pliron::parsable::ParseResult<'a, Self::Parsed> {
+        if !results.is_empty() {
+            input_err!(
+                results[0].1.clone(),
+                pliron::builtin::op_interfaces::NResultsVerifyErr(0, results.len())
+            )?
+        }
+
+        let r#if = spaced(char::string("if"));
+        let true_operands = delimited_list_parser('(', ')', ',', ssa_opd_parser());
+        let r_else = spaced(char::string("else"));
+        let false_operands = delimited_list_parser('(', ')', ',', ssa_opd_parser());
+
+        let (((condition, true_dest), true_dest_opds), (false_dest, false_dest_opds)) = r#if
+            .with(spaced(ssa_opd_parser()))
+            .and(spaced(block_opd_parser()))
+            .and(true_operands)
+            .and(spaced(r_else).with(spaced(block_opd_parser()).and(false_operands)))
+            .parse_stream(state_stream)
+            .into_result()?
+            .0;
+
+        let op = CondBrOp::new(
+            state_stream.state.ctx,
+            condition,
+            true_dest,
+            true_dest_opds,
+            false_dest,
+            false_dest_opds,
+        );
+
+        process_parsed_ssa_defs(state_stream, &results, op.get_operation())?;
+        Ok(OpObj::new(op)).into_parse_result()
+    }
+}
+
 /// Represents a `for` loop with an initial value, an upper bound, and a step.
 /// Additional loop-carried variables can be specified as operands and results.
 /// The loop body is defined in a region that takes the loop induction variable
@@ -128,14 +366,14 @@ impl Verify for YieldOp {
 /// | `iter_args_res` | (variadic) Updated loop-carried variables after loop completion.
 ///
 /// ## Region(s)
-///   - A single region containing the loop body.
-///   The region takes as entry-block arguments the loop induction variable followed by
-///   the loop-carried variables. The body should `yield`, in its exit block, the updated
-///   loop-carried variables at the end of each iteration. The entry and exit blocks must
-///   be the first and last blocks of the region, respectively.
+///   - A single region, with a single block, containing the loop body.
+///   The block takes as arguments the loop induction variable followed by
+///   the loop-carried variables, and must `yield` the updated loop-carried
+///   variables at the end of each iteration.
+///   Use [ExecuteRegionOp] to embed multi-block control flow in the loop body.
 #[pliron_op(
     name = "cf.for",
-    interfaces = [OneRegionInterface, NRegionsInterface<1>, OperandSegmentInterface, YieldingRegion<YieldOp>],
+    interfaces = [OneRegionInterface, NRegionsInterface<1>, OperandSegmentInterface, YieldingRegion<YieldOp>, SingleBlockRegionInterface],
 )]
 pub struct ForOp;
 
@@ -416,13 +654,13 @@ pub type NDForOpBodyBuilderFn<State> = fn(
 /// | `steps` | The step sizes for each iteration. Must be of index type. |
 ///
 //// ## Region(s)
-///   - A single region containing the loop body.
-///   The region takes as entry-block arguments the loop induction variables.
-///   The entry and exit blocks must be the first and last blocks of the region,
-///   respectively. The exit block must [YieldOp] with no operands.
+///   - A single region, with a single block, containing the loop body.
+///   The block takes as arguments the loop induction variables, and must
+///   end with a [YieldOp] with no operands.
+///   Use [ExecuteRegionOp] to embed multi-block control flow in the loop body.
 #[pliron_op(
     name = "cf.nd_for",
-    interfaces = [OneRegionInterface, NRegionsInterface<1>, OperandSegmentInterface, YieldingRegion<YieldOp>],
+    interfaces = [OneRegionInterface, NRegionsInterface<1>, OperandSegmentInterface, YieldingRegion<YieldOp>, SingleBlockRegionInterface],
 )]
 pub struct NDForOp;
 
@@ -635,5 +873,146 @@ impl NDForOp {
         ));
         op_inserter.insert_op(ctx, &yield_op);
         op
+    }
+}
+
+/// Executes a region containing arbitrary (possibly multi-block) control flow, once, inline.
+///
+/// This enables embedding multi-block control flow inside [SingleBlockRegionInterface]
+/// Ops (like [ForOp]).
+///
+/// ## Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `results` | (variadic) values produced by the region, as `yield`ed by its exit block |
+///
+/// ## Region(s)
+///   - A single region, taking no arguments, which may contain multiple blocks.
+///   The exit (lexicographically last) block must `yield` the results of this op.
+#[pliron_op(
+    name = "cf.execute_region",
+    interfaces = [OneRegionInterface, NRegionsInterface<1>, YieldingRegion<YieldOp>],
+)]
+pub struct ExecuteRegionOp;
+
+/// Type alias for the body builder function used in `ExecuteRegionOp::new`.
+pub type ExecuteRegionOpBodyBuilderFn<State> =
+    fn(ctx: &mut Context, state: State, inserter: &mut IRInserter<DummyListener>) -> Vec<Value>;
+
+impl ExecuteRegionOp {
+    /// Creates a new `ExecuteRegionOp` with the specified result types.
+    ///
+    /// The `body_builder` function is called to populate the body of the region.
+    ///   - It is provided with an inserter, set to the start of the entry block.
+    ///   - It must return the values that this op should produce as results.
+    ///
+    /// A [YieldOp] is automatically added at the end of the body, taking these results
+    /// as operands.
+    pub fn new<State>(
+        ctx: &mut Context,
+        result_types: Vec<TypeHandle>,
+        body_builder: ExecuteRegionOpBodyBuilderFn<State>,
+        body_builder_state: State,
+    ) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            result_types,
+            vec![],
+            vec![],
+            1,
+        );
+
+        let op = ExecuteRegionOp { op };
+
+        // Set up the region and its entry block.
+        let region = op.get_region(ctx);
+        let entry_block = BasicBlock::new(ctx, Some("entry".try_into().unwrap()), vec![]);
+        entry_block.insert_at_front(region, ctx);
+
+        // Populate the body.
+        let op_inserter = &mut IRInserter::new_at_block_start(entry_block);
+        let yield_values = body_builder(ctx, body_builder_state, op_inserter);
+        let yield_op = YieldOp::new(ctx, yield_values);
+        op_inserter.set_insertion_point(OpInsertionPoint::AtBlockEnd(
+            region
+                .deref(ctx)
+                .get_tail()
+                .expect("Region must have at least one block"),
+        ));
+        op_inserter.insert_op(ctx, &yield_op);
+        op
+    }
+}
+
+impl Printable for ExecuteRegionOp {
+    fn fmt(
+        &self,
+        ctx: &Context,
+        state: &pliron::printable::State,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        let op = self.get_operation().deref(ctx);
+        if op.get_num_results() > 0 {
+            let results = iter_with_sep(op.results(), ListSeparator::CharSpace(','));
+            write!(f, "{} = ", results.disp(ctx))?;
+        }
+        let result_types = op.results().map(|r| r.get_type(ctx)).collect::<Vec<_>>();
+        writeln!(
+            f,
+            "{} -> ({}) {}",
+            Self::get_opid_static(),
+            list_with_sep(&result_types, ListSeparator::CharSpace(',')).disp(ctx),
+            self.get_region(ctx).print(ctx, state)
+        )
+    }
+}
+
+impl Parsable for ExecuteRegionOp {
+    type Arg = Vec<(Identifier, Location)>;
+    type Parsed = OpObj;
+
+    fn parse<'a>(
+        state_stream: &mut pliron::parsable::StateStream<'a>,
+        results: Self::Arg,
+    ) -> pliron::parsable::ParseResult<'a, Self::Parsed> {
+        let (result_types, _) = spaced(char::string("->"))
+            .with(delimited_list_parser('(', ')', ',', type_parser()))
+            .parse_stream(state_stream)
+            .into_result()?;
+
+        let op = Operation::new(
+            state_stream.state.ctx,
+            Self::get_concrete_op_info(),
+            result_types,
+            vec![],
+            vec![],
+            0,
+        );
+
+        let opop = ExecuteRegionOp { op };
+
+        spaces()
+            .with(Region::parser(op))
+            .parse_stream(state_stream)
+            .into_result()?;
+
+        process_parsed_ssa_defs(state_stream, &results, op)?;
+        Ok(OpObj::new(opop)).into_parse_result()
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum ExecuteRegionOpVerifyErr {
+    #[error("ExecuteRegionOp's region must not take any arguments")]
+    RegionHasArguments,
+}
+
+impl Verify for ExecuteRegionOp {
+    fn verify(&self, ctx: &Context) -> pliron::result::Result<()> {
+        if self.get_entry(ctx).deref(ctx).get_num_arguments() != 0 {
+            return verify_err!(self.loc(ctx), ExecuteRegionOpVerifyErr::RegionHasArguments);
+        }
+        Ok(())
     }
 }

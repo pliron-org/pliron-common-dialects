@@ -5,7 +5,7 @@
 //! that convert control flow operations to their LLVM IR counterparts.
 
 use pliron::{
-    builtin::ops::ModuleOp,
+    builtin::{op_interfaces::SingleBlockRegionVerifyErr, ops::ModuleOp},
     combine::Parser,
     context::Context,
     init_env_logger_for_tests, input_error_noloc,
@@ -21,7 +21,7 @@ use pliron::{
 use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::LLVMLLJIT, target::initialize_native};
 
 use expect_test::expect;
-use pliron_common_dialects::cf::to_llvm::CFToLLVM;
+use pliron_common_dialects::cf::{op_interfaces::YieldingRegionVerifyErr, to_llvm::CFToLLVM};
 
 #[test]
 fn test_for_op_to_llvm_conversion() {
@@ -75,36 +75,36 @@ fn test_for_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                v14 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v15 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v16 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
-                v12 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
-                v13 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
-                llvm.br ^for_op_header_block5v1(v14, v12)
+                c0_v14 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                c10_v15 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                c1_v16 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
+                init_v12 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
+                inc_v13 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
+                llvm.br ^for_op_header_block5v1(c0_v14, init_v12)
 
-              ^for_op_header_block5v1(v17: builtin.integer i64, v18: builtin.fp32 ) !7:
-                v19 = llvm.icmp v17 <ULT> v15 : builtin.integer i1;
-                llvm.cond_br if v19 ^entry_block3v1(v17, v18) else ^entry_split_block4v1()
+              ^for_op_header_block5v1(v17: builtin.integer i64, result_v18: builtin.fp32 ) !7:
+                v19 = llvm.icmp v17 <ULT> c10_v15 : builtin.integer i1;
+                llvm.cond_br if v19 ^entry_block3v1(v17, result_v18) else ^entry_split_block4v1()
 
               ^entry_block3v1(iv_v6: builtin.integer i64, iter_arg_v7: builtin.fp32 ) !8:
-                next_v8 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v7, v13 : builtin.fp32  !9;
-                v20 = llvm.add iv_v6, v16 <{nsw=false,nuw=false}>: builtin.integer i64;
+                next_v8 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v7, inc_v13 : builtin.fp32  !9;
+                v20 = llvm.add iv_v6, c1_v16 <{nsw=false,nuw=false}>: builtin.integer i64;
                 llvm.br ^for_op_header_block5v1(v20, next_v8)
 
               ^entry_split_block4v1():
-                llvm.return v18 !10
+                llvm.return result_v18 !10
             } !11
         } !12
 
         outlined_attributes:
         !0 = @[<in-memory>: line: 3, column: 15], []
         !1 = @[<in-memory>: line: 5, column: 19], []
-        !2 = @[<in-memory>: line: 6, column: 21], []
-        !3 = @[<in-memory>: line: 7, column: 21], []
-        !4 = @[<in-memory>: line: 8, column: 21], []
-        !5 = @[<in-memory>: line: 9, column: 21], []
-        !6 = @[<in-memory>: line: 10, column: 21], []
-        !7 = @[<in-memory>: line: 12, column: 21], []
+        !2 = @[<in-memory>: line: 6, column: 21], [builtin_debug_info = builtin.debug_info [c0]]
+        !3 = @[<in-memory>: line: 7, column: 21], [builtin_debug_info = builtin.debug_info [c10]]
+        !4 = @[<in-memory>: line: 8, column: 21], [builtin_debug_info = builtin.debug_info [c1]]
+        !5 = @[<in-memory>: line: 9, column: 21], [builtin_debug_info = builtin.debug_info [init]]
+        !6 = @[<in-memory>: line: 10, column: 21], [builtin_debug_info = builtin.debug_info [inc]]
+        !7 = @[<in-memory>: line: 12, column: 21], [builtin_debug_info = builtin.debug_info [?, result]]
         !8 = @[<in-memory>: line: 13, column: 25], [builtin_debug_info = builtin.debug_info [iv, iter_arg]]
         !9 = @[<in-memory>: line: 14, column: 29], [builtin_debug_info = builtin.debug_info [next]]
         !10 = @[<in-memory>: line: 18, column: 21], []
@@ -129,19 +129,19 @@ fn test_for_op_to_llvm_conversion() {
 
         for_op_header_block5v1:                           ; preds = %entry_block3v1, %entry_block2v1
           %v17 = phi i64 [ 0, %entry_block2v1 ], [ %v20, %entry_block3v1 ]
-          %v18 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v8, %entry_block3v1 ]
+          %result_v18 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v8, %entry_block3v1 ]
           %v19 = icmp ult i64 %v17, 10
           br i1 %v19, label %entry_block3v1, label %entry_split_block4v1
 
         entry_block3v1:                                   ; preds = %for_op_header_block5v1
           %iv_v6 = phi i64 [ %v17, %for_op_header_block5v1 ]
-          %iter_arg_v7 = phi float [ %v18, %for_op_header_block5v1 ]
+          %iter_arg_v7 = phi float [ %result_v18, %for_op_header_block5v1 ]
           %next_v8 = fadd fast float %iter_arg_v7, 3.500000e+00
           %v20 = add i64 %iv_v6, 1
           br label %for_op_header_block5v1
 
         entry_split_block4v1:                             ; preds = %for_op_header_block5v1
-          ret float %v18
+          ret float %result_v18
         }
     "#]]
     .assert_eq(&llvm_ir.to_string());
@@ -220,26 +220,26 @@ fn test_ndfor_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                v20 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                v21 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
-                v22 = llvm.constant <builtin.integer <11: i64>> : builtin.integer i64 !4;
-                v23 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !5;
-                v17 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !6;
-                accum_v5 = llvm.alloca [builtin.fp32  x v17]  : llvm.ptr (0) !7;
-                v18 = llvm.constant <builtin.single 0> : builtin.fp32  !8;
-                v19 = llvm.constant <builtin.single 1.5> : builtin.fp32  !9;
-                llvm.store *accum_v5 <- v18  !10;
-                llvm.br ^for_op_header_block9v1(v20)
+                c0_v20 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                c10_v21 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                c11_v22 = llvm.constant <builtin.integer <11: i64>> : builtin.integer i64 !4;
+                c1_v23 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !5;
+                c1_0_v17 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !6;
+                accum_v5 = llvm.alloca [builtin.fp32  x c1_0_v17]  : llvm.ptr (0) !7;
+                f0_v18 = llvm.constant <builtin.single 0> : builtin.fp32  !8;
+                f1_v19 = llvm.constant <builtin.single 1.5> : builtin.fp32  !9;
+                llvm.store *accum_v5 <- f0_v18  !10;
+                llvm.br ^for_op_header_block9v1(c0_v20)
 
               ^for_op_header_block9v1(v29: builtin.integer i64) !11:
-                v30 = llvm.icmp v29 <ULT> v21 : builtin.integer i1;
+                v30 = llvm.icmp v29 <ULT> c10_v21 : builtin.integer i1;
                 llvm.cond_br if v30 ^entry_block5v1(v29) else ^entry_split_block8v1()
 
               ^entry_block5v1(iv_v25: builtin.integer i64) !12:
-                llvm.br ^for_op_header_block7v1(v20)
+                llvm.br ^for_op_header_block7v1(c0_v20)
 
               ^for_op_header_block7v1(v26: builtin.integer i64):
-                v27 = llvm.icmp v26 <ULT> v22 : builtin.integer i1;
+                v27 = llvm.icmp v26 <ULT> c11_v22 : builtin.integer i1;
                 llvm.cond_br if v27 ^entry_block4v1(v26) else ^entry_split_block6v1()
 
               ^entry_block4v1(iv_v24: builtin.integer i64) !13:
@@ -247,13 +247,13 @@ fn test_ndfor_op_to_llvm_conversion() {
 
               ^entry_block3v1(i_v8: builtin.integer i64, j_v9: builtin.integer i64) !14:
                 accum_val_v10 = llvm.load accum_v5  : builtin.fp32  !15;
-                sum_v11 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> accum_val_v10, v19 : builtin.fp32  !16;
+                sum_v11 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> accum_val_v10, f1_v19 : builtin.fp32  !16;
                 llvm.store *accum_v5 <- sum_v11  !17;
-                v28 = llvm.add iv_v24, v23 <{nsw=false,nuw=false}>: builtin.integer i64;
+                v28 = llvm.add iv_v24, c1_v23 <{nsw=false,nuw=false}>: builtin.integer i64;
                 llvm.br ^for_op_header_block7v1(v28)
 
               ^entry_split_block6v1():
-                v31 = llvm.add iv_v25, v23 <{nsw=false,nuw=false}>: builtin.integer i64;
+                v31 = llvm.add iv_v25, c1_v23 <{nsw=false,nuw=false}>: builtin.integer i64;
                 llvm.br ^for_op_header_block9v1(v31)
 
               ^entry_split_block8v1():
@@ -265,14 +265,14 @@ fn test_ndfor_op_to_llvm_conversion() {
         outlined_attributes:
         !0 = @[<in-memory>: line: 3, column: 15], []
         !1 = @[<in-memory>: line: 5, column: 19], []
-        !2 = @[<in-memory>: line: 6, column: 21], []
-        !3 = @[<in-memory>: line: 7, column: 21], []
-        !4 = @[<in-memory>: line: 8, column: 21], []
-        !5 = @[<in-memory>: line: 9, column: 21], []
-        !6 = @[<in-memory>: line: 10, column: 21], []
+        !2 = @[<in-memory>: line: 6, column: 21], [builtin_debug_info = builtin.debug_info [c0]]
+        !3 = @[<in-memory>: line: 7, column: 21], [builtin_debug_info = builtin.debug_info [c10]]
+        !4 = @[<in-memory>: line: 8, column: 21], [builtin_debug_info = builtin.debug_info [c11]]
+        !5 = @[<in-memory>: line: 9, column: 21], [builtin_debug_info = builtin.debug_info [c1]]
+        !6 = @[<in-memory>: line: 10, column: 21], [builtin_debug_info = builtin.debug_info [c1_0]]
         !7 = @[<in-memory>: line: 11, column: 21], [builtin_debug_info = builtin.debug_info [accum]]
-        !8 = @[<in-memory>: line: 12, column: 21], []
-        !9 = @[<in-memory>: line: 13, column: 21], []
+        !8 = @[<in-memory>: line: 12, column: 21], [builtin_debug_info = builtin.debug_info [f0]]
+        !9 = @[<in-memory>: line: 13, column: 21], [builtin_debug_info = builtin.debug_info [f1]]
         !10 = @[<in-memory>: line: 14, column: 21], []
         !11 = @[<in-memory>: line: 16, column: 21], []
         !12 = [builtin_debug_info = builtin.debug_info [iv]]
@@ -434,4 +434,231 @@ fn test_nested_for_op_iter_arg_result_type() {
         }"#]].assert_eq(&module_op.disp(ctx).to_string());
 
     verify_op(&module_op, ctx).expect_ok(ctx);
+}
+
+// [ForOp] and [NDForOp] bodies must be a single block: verify must reject a
+// body region with more than one block.
+#[test]
+fn test_for_op_multi_block_body_rejected() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+            builtin.module @test_module {
+              ^entry():
+                llvm.func @test_for: llvm.func <builtin.fp32 () variadic = false> [] {
+                  ^entry():
+                    c0 = index.constant <index.constant 0> : index.index;
+                    c10 = index.constant <index.constant 10> : index.index;
+                    c1 = index.constant <index.constant 1> : index.index;
+                    init = builtin.constant <builtin.single 1.0> : builtin.fp32;
+
+                    result = cf.for c0 to c10 step c1 (init) {
+                        ^entry(iv : index.index, iter_arg : builtin.fp32):
+                            cf.br ^second(iter_arg)
+                        ^second(a : builtin.fp32):
+                            cf.yield a
+                    };
+
+                    llvm.return result
+                }
+            }
+            "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+
+    let err = verify_op(&module_op, ctx).unwrap_err();
+    err.err
+        .downcast_ref::<SingleBlockRegionVerifyErr>()
+        .unwrap();
+}
+
+// [ExecuteRegionOp] can hold a multi-block region, and can therefore be used to
+// embed arbitrary control flow inside a [ForOp]'s single-block body.
+#[test]
+fn test_execute_region_op_to_llvm_conversion() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+            builtin.module @test_module {
+              ^entry():
+                llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
+                  ^entry():
+                    c0 = index.constant <index.constant 0> : index.index;
+                    c10 = index.constant <index.constant 10> : index.index;
+                    c1 = index.constant <index.constant 1> : index.index;
+                    init = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                    inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+
+                    result = cf.for c0 to c10 step c1 (init) {
+                        ^entry(iv : index.index, iter_arg : builtin.fp32):
+                            next = cf.execute_region -> (builtin.fp32) {
+                                ^entry():
+                                    tmp = llvm.fadd <FAST> iter_arg, inc : builtin.fp32;
+                                    cf.br ^exit(tmp)
+                                ^exit(v : builtin.fp32):
+                                    cf.yield v
+                            };
+                            cf.yield next
+                    };
+
+                    llvm.return result
+                }
+            }
+            "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_execute_region")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let result = f();
+    assert_eq!(result, 36.0);
+}
+
+// A non-exit block of a [YieldingRegion] (here, a [ExecuteRegionOp]) must end
+// with a terminator implementing `BranchOpInterface` (e.g. `cf.br` / `cf.cond_br`).
+// A non-branch terminator such as `llvm.return` is rejected, even though it's
+// a valid terminator on its own.
+#[test]
+fn test_execute_region_op_non_branch_terminator_rejected() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+            builtin.module @test_module {
+              ^entry():
+                llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
+                  ^entry():
+                    inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+                    next = cf.execute_region -> (builtin.fp32) {
+                        ^entry():
+                            llvm.return inc
+                        ^exit(v : builtin.fp32):
+                            cf.yield v
+                    };
+                    llvm.return next
+                }
+            }
+            "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+
+    let err = verify_op(&module_op, ctx).unwrap_err();
+    let err = err.err.downcast_ref::<YieldingRegionVerifyErr>().unwrap();
+    assert!(matches!(
+        err,
+        YieldingRegionVerifyErr::NonExitBlockBadTerminator
+    ));
+}
+
+// `cf.cond_br` round-trips through parsing/printing and lowers to `llvm.cond_br`,
+// branching to the correct target block with the correct forwarded operand.
+#[test]
+fn test_cond_br_op_to_llvm_conversion() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+            builtin.module @test_module {
+              ^entry():
+                llvm.func @test_cond_br: llvm.func <builtin.fp32 () variadic = false> [] {
+                    ^entry():
+                        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                        one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                        cond = llvm.icmp zero <ULT> one : builtin.integer i1;
+                        true_val = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                        false_val = builtin.constant <builtin.single 2.0> : builtin.fp32;
+                        cf.cond_br if cond ^true_blk(true_val) else ^false_blk(false_val)
+                    ^true_blk(x : builtin.fp32):
+                        llvm.return x
+                    ^false_blk(y : builtin.fp32):
+                        llvm.return y
+                }
+            }
+            "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_cond_br")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let result = f();
+    // 0 < 1 is true, so the `true_blk` branch (returning `true_val` == 1.0) is taken.
+    assert_eq!(result, 1.0);
 }

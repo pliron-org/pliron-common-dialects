@@ -6,7 +6,9 @@
 use pliron::{
     basic_block::BasicBlock,
     builtin::{
-        op_interfaces::{OneRegionInterface, OneResultInterface},
+        op_interfaces::{
+            BranchOpInterface, OneRegionInterface, OneResultInterface, OneSuccInterface,
+        },
         types::{IntegerType, Signedness},
     },
     context::{Context, Ptr},
@@ -31,12 +33,12 @@ use pliron_llvm::{
     ToLLVMDialect, ToLLVMType,
     attributes::{ICmpPredicateAttr, IntegerOverflowFlagsAttr},
     op_interfaces::IntBinArithOpWithOverflowFlag,
-    ops::{AddOp, BrOp, CondBrOp, ICmpOp},
+    ops::{AddOp, BrOp as LlvmBrOp, CondBrOp as LlvmCondBrOp, ICmpOp},
 };
 
 use crate::cf::{
     op_interfaces::YieldingRegion,
-    ops::{ForOp, NDForOp},
+    ops::{BrOp, CondBrOp, ExecuteRegionOp, ForOp, NDForOp},
 };
 
 /// Implement [DialectConversion] for control-flow to LLVM conversion.
@@ -147,7 +149,7 @@ impl ToLLVMDialect for ForOp {
         let cmp = ICmpOp::new(ctx, ICmpPredicateAttr::ULT, header_iv, upper_bound);
         let cmp_result = cmp.get_result(ctx);
         rewriter.insert_op(ctx, &cmp);
-        let cond_br = CondBrOp::new(
+        let cond_br = LlvmCondBrOp::new(
             ctx,
             cmp_result,
             for_body_entry,
@@ -159,7 +161,7 @@ impl ToLLVMDialect for ForOp {
 
         // Pre-header must branch to header with initial induction variable and iter args
         rewriter.set_insertion_point(OpInsertionPoint::AtBlockEnd(pre_header));
-        let pre_header_br = BrOp::new(
+        let pre_header_br = LlvmBrOp::new(
             ctx,
             header,
             std::iter::once(lower_bound)
@@ -178,7 +180,7 @@ impl ToLLVMDialect for ForOp {
         let branch_operands: Vec<_> = std::iter::once(iv_next.get_result(ctx))
             .chain(yield_op.deref(ctx).operands())
             .collect();
-        let for_body_exit_br = BrOp::new(ctx, header, branch_operands);
+        let for_body_exit_br = LlvmBrOp::new(ctx, header, branch_operands);
         rewriter.append_op(ctx, &for_body_exit_br);
         rewriter.erase_operation(ctx, yield_op);
 
@@ -332,7 +334,7 @@ impl ToLLVMDialect for NDForOp {
                 state.rewriter,
                 OpInsertionPoint::AtBlockEnd(state.innermost_for_op_entry_block.unwrap()),
             );
-            let branch = BrOp::new(
+            let branch = LlvmBrOp::new(
                 ctx,
                 branch_to_block,
                 state.indices.iter().rev().cloned().collect(),
@@ -349,6 +351,136 @@ impl ToLLVMDialect for NDForOp {
             state.last_created_for_op.unwrap().get_operation(),
         );
 
+        Ok(())
+    }
+}
+
+// Rewrite pattern for `ExecuteRegionOp`:
+//     <code before ExecuteRegionOp>
+//     llvm.br ^region_entry
+//
+//  ^region_entry:
+//     ... (region body, possibly multiple blocks) ...
+//
+//  ^region_exit:
+//     ...
+//     %yield_operands, ... = ... # remove `yield` op
+//     llvm.br ^continuation(%yield_operands, ...)
+//
+//  ^continuation(%results, ...):
+//     <code after ExecuteRegionOp, using %results instead of the op's results>
+#[op_interface_impl]
+impl ToLLVMDialect for ExecuteRegionOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let self_op = self.get_operation();
+        let result_types: Vec<TypeHandle> = self_op
+            .deref(ctx)
+            .results()
+            .map(|r| r.get_type(ctx))
+            .collect();
+        let region_entry = self.get_entry(ctx);
+
+        let pre_block = self_op
+            .deref(ctx)
+            .get_parent_block()
+            .expect("ExecuteRegionOp must be inside a block");
+
+        // Split so that this op (and everything after it) moves into a new
+        // continuation block, which accepts the region's results as arguments.
+        let continuation = {
+            let mut scoped = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
+            let continuation = scoped.create_block(
+                ctx,
+                BlockInsertionPoint::AfterBlock(pre_block),
+                None,
+                result_types,
+            );
+            let mut current_op_opt = Some(self_op);
+            while let Some(current_op) = current_op_opt {
+                let next_op = current_op.deref(ctx).get_next();
+                scoped.move_operation(ctx, current_op, OpInsertionPoint::AtBlockEnd(continuation));
+                current_op_opt = next_op;
+            }
+            continuation
+        };
+        let continuation_args = continuation.deref(ctx).arguments().collect::<Vec<_>>();
+
+        // The exit block of the region must branch to the continuation,
+        // passing along the yielded values.
+        let yield_op = self.get_yield(ctx).get_operation();
+        let yield_operands: Vec<_> = yield_op.deref(ctx).operands().collect();
+        rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(yield_op));
+        let exit_br = LlvmBrOp::new(ctx, continuation, yield_operands);
+        rewriter.insert_op(ctx, &exit_br);
+        rewriter.erase_operation(ctx, yield_op);
+
+        // Inline the region's blocks between the pre-block and the continuation.
+        rewriter.inline_region(
+            ctx,
+            self.get_region(ctx),
+            BlockInsertionPoint::AfterBlock(pre_block),
+        );
+
+        // The pre-block must branch to the region's (former) entry block.
+        rewriter.set_insertion_point(OpInsertionPoint::AtBlockEnd(pre_block));
+        let pre_br = LlvmBrOp::new(ctx, region_entry, vec![]);
+        rewriter.insert_op(ctx, &pre_br);
+
+        // Replace uses of the ExecuteRegionOp with the continuation block's arguments.
+        rewriter.replace_operation_with_values(ctx, self_op, continuation_args);
+
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl ToLLVMDialect for BrOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let dest = self.get_successor(ctx);
+        let dest_opds = self.successor_operands(ctx, 0);
+        let new_op = LlvmBrOp::new(ctx, dest, dest_opds);
+        rewriter.set_insertion_point(OpInsertionPoint::BeforeOperation(self.get_operation()));
+        rewriter.insert_op(ctx, &new_op);
+        rewriter.replace_operation(ctx, self.get_operation(), new_op.get_operation());
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl ToLLVMDialect for CondBrOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let condition = self.get_operand_condition(ctx);
+        let op = self.get_operation();
+        let true_dest = op.deref(ctx).get_successor(0);
+        let false_dest = op.deref(ctx).get_successor(1);
+        let true_dest_opds = self.successor_operands(ctx, 0);
+        let false_dest_opds = self.successor_operands(ctx, 1);
+        let new_op = LlvmCondBrOp::new(
+            ctx,
+            condition,
+            true_dest,
+            true_dest_opds,
+            false_dest,
+            false_dest_opds,
+        );
+        rewriter.set_insertion_point(OpInsertionPoint::BeforeOperation(self.get_operation()));
+        rewriter.insert_op(ctx, &new_op);
+        rewriter.replace_operation(ctx, self.get_operation(), new_op.get_operation());
         Ok(())
     }
 }
