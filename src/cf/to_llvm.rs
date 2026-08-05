@@ -20,7 +20,7 @@ use pliron::{
         match_rewrite::MatchRewriter,
         rewriter::{Rewriter, ScopedRewriter},
     },
-    linked_list::LinkedList,
+    linked_list::{ContainsLinkedList, LinkedList},
     location::Located,
     op::{Op, op_cast, op_impls},
     operation::Operation,
@@ -37,8 +37,8 @@ use pliron_llvm::{
 };
 
 use crate::cf::{
-    op_interfaces::YieldingRegion,
-    ops::{BrOp, CondBrOp, ExecuteRegionOp, ForOp, NDForOp},
+    op_interfaces::YieldingRegions,
+    ops::{BrOp, CondBrOp, ExecuteRegionOp, ForOp, IfOp, NDForOp},
 };
 
 /// Implement [DialectConversion] for control-flow to LLVM conversion.
@@ -111,7 +111,7 @@ impl ToLLVMDialect for ForOp {
         let step = self.get_step(ctx);
         let iter_vars_init = self.get_iter_args_init(ctx);
         let iv = self.get_induction_variable(ctx);
-        let for_body_entry = self.get_entry(ctx);
+        let for_body_entry = self.get_entry(ctx, 0);
 
         let self_op = self.get_operation();
         let self_op_loc = self_op.deref(ctx).loc();
@@ -172,7 +172,7 @@ impl ToLLVMDialect for ForOp {
 
         // Set the for body exit block to to branch to the header
         // with the next induction variable and iter args from yield.
-        let yield_op = self.get_yield(ctx).get_operation();
+        let yield_op = self.get_yield(ctx, 0).get_operation();
         rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(yield_op));
         let iv_next =
             AddOp::new_with_overflow_flag(ctx, iv, step, IntegerOverflowFlagsAttr::default());
@@ -223,7 +223,7 @@ impl ToLLVMDialect for NDForOp {
         let region = self.get_region(ctx);
 
         // Remove the [YieldOp] in the body, it's useless and impedes LLVM conversion.
-        let yield_op = self.get_yield(ctx);
+        let yield_op = self.get_yield(ctx, 0);
         rewriter.erase_operation(ctx, yield_op.get_operation());
 
         // Iterate over the loop dimensions in reverse order,
@@ -383,7 +383,7 @@ impl ToLLVMDialect for ExecuteRegionOp {
             .results()
             .map(|r| r.get_type(ctx))
             .collect();
-        let region_entry = self.get_entry(ctx);
+        let region_entry = self.get_entry(ctx, 0);
 
         let pre_block = self_op
             .deref(ctx)
@@ -412,7 +412,7 @@ impl ToLLVMDialect for ExecuteRegionOp {
 
         // The exit block of the region must branch to the continuation,
         // passing along the yielded values.
-        let yield_op = self.get_yield(ctx).get_operation();
+        let yield_op = self.get_yield(ctx, 0).get_operation();
         let yield_operands: Vec<_> = yield_op.deref(ctx).operands().collect();
         rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(yield_op));
         let exit_br = LlvmBrOp::new(ctx, continuation, yield_operands);
@@ -432,6 +432,124 @@ impl ToLLVMDialect for ExecuteRegionOp {
         rewriter.insert_op(ctx, &pre_br);
 
         // Replace uses of the ExecuteRegionOp with the continuation block's arguments.
+        rewriter.replace_operation_with_values(ctx, self_op, continuation_args);
+
+        Ok(())
+    }
+}
+
+// Rewrite pattern for `IfOp`:
+//     <code before IfOp>
+//     llvm.cond_br if %cond ^then_entry else ^else_entry_or_continuation
+//
+//  ^then_entry:
+//     ... (then region body, possibly multiple blocks) ...
+//
+//  ^then_exit:
+//     ...
+//     %then_yield_operands, ... = ... # remove `yield` op
+//     llvm.br ^continuation(%then_yield_operands, ...)
+//
+//  ^else_entry: (if `else` region is present)
+//     ... (else region body, possibly multiple blocks) ...
+//
+//  ^else_exit:
+//     ...
+//     %else_yield_operands, ... = ... # remove `yield` op
+//     llvm.br ^continuation(%else_yield_operands, ...)
+//
+//  ^continuation(%results, ...):
+//     <code after IfOp, using %results instead of the op's results>
+#[op_interface_impl]
+impl ToLLVMDialect for IfOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let self_op = self.get_operation();
+        let condition = self.get_operand_condition(ctx);
+        let result_types: Vec<TypeHandle> = self_op
+            .deref(ctx)
+            .results()
+            .map(|r| r.get_type(ctx))
+            .collect();
+        let then_entry = self.get_then_entry(ctx);
+        let else_entry = self.get_else_entry(ctx);
+
+        let pre_block = self_op
+            .deref(ctx)
+            .get_parent_block()
+            .expect("IfOp must be inside a block");
+
+        // Split so that this op (and everything after it) moves into a new
+        // continuation block, which accepts this op's (merged) results as arguments.
+        let continuation = {
+            let mut scoped = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
+            let continuation = scoped.create_block(
+                ctx,
+                BlockInsertionPoint::AfterBlock(pre_block),
+                None,
+                result_types,
+            );
+            let mut current_op_opt = Some(self_op);
+            while let Some(current_op) = current_op_opt {
+                let next_op = current_op.deref(ctx).get_next();
+                scoped.move_operation(ctx, current_op, OpInsertionPoint::AtBlockEnd(continuation));
+                current_op_opt = next_op;
+            }
+            continuation
+        };
+        let continuation_args = continuation.deref(ctx).arguments().collect::<Vec<_>>();
+
+        // The exit block of the `then` region must branch to the continuation,
+        // passing along its yielded values.
+        let then_yield_op = self.get_then_yield(ctx).get_operation();
+        let then_yield_operands: Vec<_> = then_yield_op.deref(ctx).operands().collect();
+        rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(then_yield_op));
+        let then_exit_br = LlvmBrOp::new(ctx, continuation, then_yield_operands);
+        rewriter.insert_op(ctx, &then_exit_br);
+        rewriter.erase_operation(ctx, then_yield_op);
+
+        // Likewise for the `else` region's exit block, if present.
+        if let Some(else_yield) = self.get_else_yield(ctx) {
+            let else_yield_op = else_yield.get_operation();
+            let else_yield_operands: Vec<_> = else_yield_op.deref(ctx).operands().collect();
+            rewriter.set_insertion_point(OpInsertionPoint::AfterOperation(else_yield_op));
+            let else_exit_br = LlvmBrOp::new(ctx, continuation, else_yield_operands);
+            rewriter.insert_op(ctx, &else_exit_br);
+            rewriter.erase_operation(ctx, else_yield_op);
+        }
+
+        // Inline the `then` region's blocks right after the pre-block, followed
+        // by the `else` region's blocks (if any).
+        let then_region = self.get_then_region(ctx);
+        let then_last_block = then_region
+            .deref(ctx)
+            .get_tail()
+            .expect("IfOp's then region must have at least one block");
+        rewriter.inline_region(ctx, then_region, BlockInsertionPoint::AfterBlock(pre_block));
+
+        let false_dest = if let Some(else_region) = self.get_else_region(ctx) {
+            rewriter.inline_region(
+                ctx,
+                else_region,
+                BlockInsertionPoint::AfterBlock(then_last_block),
+            );
+            else_entry.expect("else_entry must be set when else_region is present")
+        } else {
+            continuation
+        };
+
+        // The pre-block must conditionally branch to the `then` region's
+        // (former) entry block, or else to the `else` region's entry block
+        // (or directly to the continuation, if there's no `else` region).
+        rewriter.set_insertion_point(OpInsertionPoint::AtBlockEnd(pre_block));
+        let pre_cond_br = LlvmCondBrOp::new(ctx, condition, then_entry, vec![], false_dest, vec![]);
+        rewriter.insert_op(ctx, &pre_cond_br);
+
+        // Replace uses of the IfOp with the continuation block's arguments.
         rewriter.replace_operation_with_values(ctx, self_op, continuation_args);
 
         Ok(())

@@ -5,7 +5,7 @@
 
 use pliron::{
     basic_block::BasicBlock,
-    builtin::op_interfaces::{BranchOpInterface, IsTerminatorInterface, OneRegionInterface},
+    builtin::op_interfaces::{BranchOpInterface, IsTerminatorInterface},
     context::{Context, Ptr},
     derive::op_interface,
     linked_list::ContainsLinkedList,
@@ -15,7 +15,7 @@ use pliron::{
     verify_err,
 };
 
-/// An [Operation] that can be yielded to from a [YieldingRegion].
+/// An [Operation] that can be yielded to from a [YieldingRegions].
 #[op_interface]
 pub trait YieldingOp: IsTerminatorInterface {
     fn verify(_op: &dyn Op, _ctx: &Context) -> Result<()>
@@ -27,7 +27,7 @@ pub trait YieldingOp: IsTerminatorInterface {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum YieldingRegionVerifyErr {
+pub enum YieldingRegionsVerifyErr {
     #[error("Region is empty")]
     RegionEmpty,
     #[error("Last operation in exit block is not a YieldingOp")]
@@ -36,75 +36,80 @@ pub enum YieldingRegionVerifyErr {
     NonExitBlockBadTerminator,
 }
 
-/// An [Operation] with a single [Region](pliron::region::Region) that
+/// An [Operation] each of whose [Region](pliron::region::Region)s:
 /// 1. Has an entry (lexicographically first) and an exit (lexicographically last) block.
-/// 2. The exit block must end with a [YieldingOp].
+/// 2. Has its exit block end with a [YieldingOp].
 ///
-/// The entry and exit blocks can be the same block.
+/// The entry and exit blocks of a region can be the same block.
 #[op_interface]
-pub trait YieldingRegion<YieldOp: YieldingOp>: OneRegionInterface {
-    /// Get the `yield` operation in the loop body.
-    fn get_yield(&self, ctx: &Context) -> YieldOp {
-        let exit_block = self.get_exit(ctx);
+pub trait YieldingRegions<YieldOp: YieldingOp> {
+    /// Get the `yield` operation ending the `reg_idx`th region.
+    fn get_yield(&self, ctx: &Context, reg_idx: usize) -> YieldOp {
+        let exit_block = self.get_exit(ctx, reg_idx);
         let yield_op = exit_block
             .deref(ctx)
             .get_tail()
             .expect("Block must have at least one operation");
         Operation::get_op::<YieldOp>(yield_op, ctx)
-            .expect("The last operation in a ForOp exit block must be a YieldOp")
+            .expect("The last operation in a yielding region's exit block must be a YieldOp")
     }
 
-    /// Get the entry block of the loop body region.
-    fn get_entry(&self, ctx: &Context) -> Ptr<BasicBlock> {
-        self.get_region(ctx)
+    /// Get the entry block of the `reg_idx`th region.
+    fn get_entry(&self, ctx: &Context, reg_idx: usize) -> Ptr<BasicBlock> {
+        self.get_operation()
+            .deref(ctx)
+            .get_region(reg_idx)
             .deref(ctx)
             .get_head()
-            .expect("ForOp region must have at least one block")
+            .expect("Region must have at least one block")
     }
 
-    /// Get the exit block of the loop body region.
-    fn get_exit(&self, ctx: &Context) -> Ptr<BasicBlock> {
-        self.get_region(ctx)
+    /// Get the exit block of the `reg_idx`th region.
+    fn get_exit(&self, ctx: &Context, reg_idx: usize) -> Ptr<BasicBlock> {
+        self.get_operation()
+            .deref(ctx)
+            .get_region(reg_idx)
             .deref(ctx)
             .get_tail()
-            .expect("ForOp region must have at least one block")
+            .expect("Region must have at least one block")
     }
 
     fn verify(op: &dyn Op, ctx: &Context) -> Result<()>
     where
         Self: Sized,
     {
-        let op = op_cast::<dyn YieldingRegion<YieldOp>>(op)
-            .expect("Expected a YieldingRegion operation");
-        let region = op.get_region(ctx).deref(ctx);
+        let num_regions = op.get_operation().deref(ctx).num_regions();
+        for reg_idx in 0..num_regions {
+            let region = op.get_operation().deref(ctx).get_region(reg_idx).deref(ctx);
 
-        if region.get_head().is_none() {
-            return verify_err!(op.loc(ctx), YieldingRegionVerifyErr::RegionEmpty);
-        };
-
-        let exit_block = region
-            .get_tail()
-            .expect("Region must have at least one block");
-        let yield_op = exit_block
-            .deref(ctx)
-            .get_tail()
-            .expect("Block must have at least one operation");
-        if Operation::get_op::<YieldOp>(yield_op, ctx).is_none() {
-            return verify_err!(op.loc(ctx), YieldingRegionVerifyErr::LastOpNotYield);
-        }
-
-        // Every non-exit block's terminator must implement [BranchOpInterface],
-        // so that control flow inside this region is always well understood.
-        for block in region.iter(ctx).filter(|&block| block != exit_block) {
-            let Some(terminator) = block.deref(ctx).get_terminator(ctx) else {
-                continue;
+            if region.get_head().is_none() {
+                return verify_err!(op.loc(ctx), YieldingRegionsVerifyErr::RegionEmpty);
             };
-            let terminator_op = Operation::get_op_dyn(terminator, ctx);
-            if op_cast::<dyn BranchOpInterface>(terminator_op.as_ref()).is_none() {
-                return verify_err!(
-                    op.loc(ctx),
-                    YieldingRegionVerifyErr::NonExitBlockBadTerminator
-                );
+
+            let exit_block = region
+                .get_tail()
+                .expect("Region must have at least one block");
+            let yield_op = exit_block
+                .deref(ctx)
+                .get_tail()
+                .expect("Block must have at least one operation");
+            if Operation::get_op::<YieldOp>(yield_op, ctx).is_none() {
+                return verify_err!(op.loc(ctx), YieldingRegionsVerifyErr::LastOpNotYield);
+            }
+
+            // Every non-exit block's terminator must implement [BranchOpInterface],
+            // so that control flow inside this region is always well understood.
+            for block in region.iter(ctx).filter(|&block| block != exit_block) {
+                let Some(terminator) = block.deref(ctx).get_terminator(ctx) else {
+                    continue;
+                };
+                let terminator_op = Operation::get_op_dyn(terminator, ctx);
+                if op_cast::<dyn BranchOpInterface>(terminator_op.as_ref()).is_none() {
+                    return verify_err!(
+                        op.loc(ctx),
+                        YieldingRegionsVerifyErr::NonExitBlockBadTerminator
+                    );
+                }
             }
         }
 

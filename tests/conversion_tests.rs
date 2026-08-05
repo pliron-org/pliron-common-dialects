@@ -21,7 +21,9 @@ use pliron::{
 use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::LLVMLLJIT, target::initialize_native};
 
 use expect_test::expect;
-use pliron_common_dialects::cf::{op_interfaces::YieldingRegionVerifyErr, to_llvm::CFToLLVM};
+use pliron_common_dialects::cf::{
+    op_interfaces::YieldingRegionsVerifyErr, ops::IfOpVerifyErr, to_llvm::CFToLLVM,
+};
 
 #[test]
 fn test_for_op_to_llvm_conversion() {
@@ -356,10 +358,9 @@ fn test_ndfor_op_to_llvm_conversion() {
     assert_eq!(result, 165.0);
 }
 
-// Regression test: a nested [ForOp]'s `iter_args_init` may itself be an
-// argument of the enclosing (outer) `ForOp`'s entry block, which is still
-// being parsed at that point. The inner op's result type must still be
-// resolved correctly (not fall back to `builtin.unit`).
+// A nested [ForOp]'s `iter_args_init` may itself be an argument of the
+// enclosing (outer) `ForOp`'s entry block, which is still being parsed at
+// that point. The inner op's result type must still be resolved correctly.
 #[test]
 fn test_nested_for_op_iter_arg_result_type() {
     init_env_logger_for_tests!();
@@ -483,40 +484,36 @@ fn test_for_op_multi_block_body_rejected() {
         .unwrap();
 }
 
-// [ExecuteRegionOp] can hold a multi-block region, and can therefore be used to
-// embed arbitrary control flow inside a [ForOp]'s single-block body.
 #[test]
 fn test_execute_region_op_to_llvm_conversion() {
     init_env_logger_for_tests!();
     let ctx = &mut Context::new();
 
     let input_ir = r#"
-            builtin.module @test_module {
-              ^entry():
-                llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
-                  ^entry():
-                    c0 = index.constant <index.constant 0> : index.index;
-                    c10 = index.constant <index.constant 10> : index.index;
-                    c1 = index.constant <index.constant 1> : index.index;
-                    init = builtin.constant <builtin.single 1.0> : builtin.fp32;
-                    inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
-
-                    result = cf.for c0 to c10 step c1 (init) {
-                        ^entry(iv : index.index, iter_arg : builtin.fp32):
-                            next = cf.execute_region -> (builtin.fp32) {
-                                ^entry():
-                                    tmp = llvm.fadd <FAST> iter_arg, inc : builtin.fp32;
-                                    cf.br ^exit(tmp)
-                                ^exit(v : builtin.fp32):
-                                    cf.yield v
-                            };
-                            cf.yield next
-                    };
-
-                    llvm.return result
-                }
-            }
-            "#;
+      builtin.module @test_module {
+        ^entry():
+          llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
+            ^entry():
+              c0 = index.constant <index.constant 0> : index.index;
+              c10 = index.constant <index.constant 10> : index.index;
+              c1 = index.constant <index.constant 1> : index.index;
+              init = builtin.constant <builtin.single 1.0> : builtin.fp32;
+              inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+              result = cf.for c0 to c10 step c1 (init) {
+                  ^entry(iv : index.index, iter_arg : builtin.fp32):
+                      next = cf.execute_region -> (builtin.fp32) {
+                          ^entry():
+                              tmp = llvm.fadd <FAST> iter_arg, inc : builtin.fp32;
+                              cf.br ^exit(tmp)
+                          ^exit(v : builtin.fp32):
+                              cf.yield v
+                      };
+                      cf.yield next
+              };
+              llvm.return result
+          }
+      }
+      "#;
 
     let state_stream = state_stream_from_iterator(
         input_ir.chars(),
@@ -532,6 +529,44 @@ fn test_execute_region_op_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                c0_v16 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                c10_v17 = llvm.constant <builtin.integer <10: i64>> : builtin.integer i64 !3;
+                c1_v18 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !4;
+                init_v14 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
+                inc_v15 = llvm.constant <builtin.single 3.5> : builtin.fp32  !6;
+                llvm.br ^for_op_header_block7v1(c0_v16, init_v14)
+
+              ^for_op_header_block7v1(v19: builtin.integer i64, result_v20: builtin.fp32 ) !7:
+                v21 = llvm.icmp v19 <ULT> c10_v17 : builtin.integer i1;
+                llvm.cond_br if v21 ^entry_block3v1(v19, result_v20) else ^entry_split_block5v3()
+
+              ^entry_block3v1(iv_v6: builtin.integer i64, iter_arg_v7: builtin.fp32 ) !8:
+                llvm.br ^entry_block4v1()
+
+              ^entry_block4v1() !9:
+                tmp_v9 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v7, inc_v15 : builtin.fp32  !10;
+                llvm.br ^exit_block6v1(tmp_v9) !11
+
+              ^exit_block6v1(v_v10: builtin.fp32 ) !12:
+                llvm.br ^block8v1(v_v10)
+
+              ^block8v1(next_v23: builtin.fp32 ) !13:
+                v22 = llvm.add iv_v6, c1_v18 <{nsw=false,nuw=false}>: builtin.integer i64;
+                llvm.br ^for_op_header_block7v1(v22, next_v23)
+
+              ^entry_split_block5v3():
+                llvm.return result_v20 !14
+            } !15
+        }"#]].assert_eq(&module_op.disp(ctx).to_string());
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
@@ -554,31 +589,29 @@ fn test_execute_region_op_to_llvm_conversion() {
     assert_eq!(result, 36.0);
 }
 
-// A non-exit block of a [YieldingRegion] (here, a [ExecuteRegionOp]) must end
-// with a terminator implementing `BranchOpInterface` (e.g. `cf.br` / `cf.cond_br`).
-// A non-branch terminator such as `llvm.return` is rejected, even though it's
-// a valid terminator on its own.
+// A non-exit block of a [YieldingRegions] op (here, a [ExecuteRegionOp]) must end
+// with a terminator implementing `BranchOpInterface`.
 #[test]
 fn test_execute_region_op_non_branch_terminator_rejected() {
     init_env_logger_for_tests!();
     let ctx = &mut Context::new();
 
     let input_ir = r#"
-            builtin.module @test_module {
-              ^entry():
-                llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
+      builtin.module @test_module {
+        ^entry():
+          llvm.func @test_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
+            ^entry():
+              inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+              next = cf.execute_region -> (builtin.fp32) {
                   ^entry():
-                    inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
-                    next = cf.execute_region -> (builtin.fp32) {
-                        ^entry():
-                            llvm.return inc
-                        ^exit(v : builtin.fp32):
-                            cf.yield v
-                    };
-                    llvm.return next
-                }
-            }
-            "#;
+                      llvm.return inc
+                  ^exit(v : builtin.fp32):
+                      cf.yield v
+              };
+              llvm.return next
+          }
+      }
+      "#;
 
     let state_stream = state_stream_from_iterator(
         input_ir.chars(),
@@ -593,10 +626,10 @@ fn test_execute_region_op_non_branch_terminator_rejected() {
     let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
 
     let err = verify_op(&module_op, ctx).unwrap_err();
-    let err = err.err.downcast_ref::<YieldingRegionVerifyErr>().unwrap();
+    let err = err.err.downcast_ref::<YieldingRegionsVerifyErr>().unwrap();
     assert!(matches!(
         err,
-        YieldingRegionVerifyErr::NonExitBlockBadTerminator
+        YieldingRegionsVerifyErr::NonExitBlockBadTerminator
     ));
 }
 
@@ -608,23 +641,217 @@ fn test_cond_br_op_to_llvm_conversion() {
     let ctx = &mut Context::new();
 
     let input_ir = r#"
-            builtin.module @test_module {
-              ^entry():
-                llvm.func @test_cond_br: llvm.func <builtin.fp32 () variadic = false> [] {
-                    ^entry():
-                        zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
-                        one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
-                        cond = llvm.icmp zero <ULT> one : builtin.integer i1;
-                        true_val = builtin.constant <builtin.single 1.0> : builtin.fp32;
-                        false_val = builtin.constant <builtin.single 2.0> : builtin.fp32;
-                        cf.cond_br if cond ^true_blk(true_val) else ^false_blk(false_val)
-                    ^true_blk(x : builtin.fp32):
-                        llvm.return x
-                    ^false_blk(y : builtin.fp32):
-                        llvm.return y
-                }
+        builtin.module @test_module {
+          ^entry():
+            llvm.func @test_cond_br: llvm.func <builtin.fp32 () variadic = false> [] {
+                ^entry():
+                    zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                    one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                    cond = llvm.icmp zero <ULT> one : builtin.integer i1;
+                    true_val = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                    false_val = builtin.constant <builtin.single 2.0> : builtin.fp32;
+                    cf.cond_br if cond ^true_blk(true_val) else ^false_blk(false_val)
+                ^true_blk(x : builtin.fp32):
+                    llvm.return x
+                ^false_blk(y : builtin.fp32):
+                    llvm.return y
             }
-            "#;
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_cond_br: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                zero_v7 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                one_v8 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !3;
+                cond_v2 = llvm.icmp zero_v7 <ULT> one_v8 : builtin.integer i1 !4;
+                true_val_v9 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
+                false_val_v10 = llvm.constant <builtin.single 2> : builtin.fp32  !6;
+                llvm.cond_br if cond_v2 ^true_blk_block5v1(true_val_v9) else ^false_blk_block3v3(false_val_v10) !7
+
+              ^true_blk_block5v1(x_v5: builtin.fp32 ) !8:
+                llvm.return x_v5 !9
+
+              ^false_blk_block3v3(y_v6: builtin.fp32 ) !10:
+                llvm.return y_v6 !11
+            } !12
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_cond_br")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let result = f();
+    // 0 < 1 is true, so the `true_blk` branch (returning `true_val` == 1.0) is taken.
+    assert_eq!(result, 1.0);
+}
+
+// `cf.if`, with an `else` region and a result
+fn if_op_with_else_input_ir(cmp_true: bool) -> String {
+    let predicate = if cmp_true { "ULT" } else { "UGT" };
+    format!(
+        r#"
+        builtin.module @test_module {{
+          ^entry():
+            llvm.func @test_if: llvm.func <builtin.fp32 () variadic = false> [] {{
+                ^entry():
+                    zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                    one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                    cond = llvm.icmp zero <{predicate}> one : builtin.integer i1;
+                    true_val = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                    false_val = builtin.constant <builtin.single 2.0> : builtin.fp32;
+                    result = cf.if cond -> (builtin.fp32) {{
+                        ^entry():
+                            cf.yield true_val
+                    }} else {{
+                        ^entry():
+                            cf.yield false_val
+                    }};
+                    llvm.return result
+            }}
+        }}
+        "#
+    )
+}
+
+#[test]
+fn test_if_op_with_else_to_llvm_conversion() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = if_op_with_else_input_ir(true);
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_if: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                zero_v0 = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                one_v1 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !3;
+                cond_v2 = llvm.icmp zero_v0 <ULT> one_v1 : builtin.integer i1 !4;
+                true_val_v3 = builtin.constant <builtin.single 1> : builtin.fp32  !5;
+                false_val_v4 = builtin.constant <builtin.single 2> : builtin.fp32  !6;
+                result_v5 = cf.if cond_v2 -> (builtin.fp32 ) 
+                {
+                  ^entry_block3v1() !7:
+                    cf.yield true_val_v3 !8
+                } else 
+                {
+                  ^entry_block4v1() !9:
+                    cf.yield false_val_v4 !10
+                }
+         !11;
+                llvm.return result_v5 !12
+            } !13
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_if: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                zero_v6 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                one_v7 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !3;
+                cond_v2 = llvm.icmp zero_v6 <ULT> one_v7 : builtin.integer i1 !4;
+                true_val_v8 = llvm.constant <builtin.single 1> : builtin.fp32  !5;
+                false_val_v9 = llvm.constant <builtin.single 2> : builtin.fp32  !6;
+                llvm.cond_br if cond_v2 ^entry_block3v1() else ^entry_block4v1()
+
+              ^entry_block3v1() !7:
+                llvm.br ^block5v1(true_val_v8)
+
+              ^entry_block4v1() !8:
+                llvm.br ^block5v1(false_val_v9)
+
+              ^block5v1(result_v10: builtin.fp32 ) !9:
+                llvm.return result_v10 !10
+            } !11
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_if")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let result = f();
+    // 0 < 1 is true, so the `then` region (yielding `true_val` == 1.0) is taken.
+    assert_eq!(result, 1.0);
+}
+
+#[test]
+fn test_if_op_with_else_false_branch_to_llvm_conversion() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = if_op_with_else_input_ir(false);
 
     let state_stream = state_stream_from_iterator(
         input_ir.chars(),
@@ -654,11 +881,292 @@ fn test_cond_br_op_to_llvm_conversion() {
     jit.add_module(llvm_ir)
         .expect("Failed to add module to JIT");
     let symbol_addr = jit
-        .lookup_symbol("test_cond_br")
+        .lookup_symbol("test_if")
         .expect("Failed to lookup symbol");
     assert!(symbol_addr != 0);
     let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
     let result = f();
-    // 0 < 1 is true, so the `true_blk` branch (returning `true_val` == 1.0) is taken.
-    assert_eq!(result, 1.0);
+    // 0 > 1 is false, so the `else` region (yielding `false_val` == 2.0) is taken.
+    assert_eq!(result, 2.0);
+}
+
+// `cf.if` without an `else` region and without results
+#[test]
+fn test_if_op_without_else_to_llvm_conversion() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+          ^entry():
+            llvm.func @test_if_no_else: llvm.func <builtin.fp32 () variadic = false> [] {
+            ^entry():
+                zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                cond = llvm.icmp zero <ULT> one : builtin.integer i1;
+                unused = builtin.constant <builtin.single 9.0> : builtin.fp32;
+                result = builtin.constant <builtin.single 42.0> : builtin.fp32;
+                cf.if cond -> () {
+                    ^entry():
+                        cf.yield
+                };
+                llvm.return result
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_if_no_else: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                zero_v5 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                one_v6 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !3;
+                cond_v2 = llvm.icmp zero_v5 <ULT> one_v6 : builtin.integer i1 !4;
+                unused_v7 = llvm.constant <builtin.single 9> : builtin.fp32  !5;
+                result_v8 = llvm.constant <builtin.single 42> : builtin.fp32  !6;
+                llvm.cond_br if cond_v2 ^entry_block3v1() else ^block4v1()
+
+              ^entry_block3v1() !7:
+                llvm.br ^block4v1()
+
+              ^block4v1():
+                llvm.return result_v8 !8
+            } !9
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_if_no_else")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let result = f();
+    assert_eq!(result, 42.0);
+}
+
+// `cf.if` with results must have an `else` region
+#[test]
+fn test_if_op_missing_else_with_results_rejected() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+          ^entry():
+            llvm.func @test_if: llvm.func <builtin.fp32 () variadic = false> [] {
+            ^entry():
+                zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                cond = llvm.icmp zero <ULT> one : builtin.integer i1;
+                true_val = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                result = cf.if cond -> (builtin.fp32) {
+                    ^entry():
+                        cf.yield true_val
+                };
+                llvm.return result
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+
+    let err = verify_op(&module_op, ctx).unwrap_err();
+    let err = err.err.downcast_ref::<IfOpVerifyErr>().unwrap();
+    assert!(matches!(err, IfOpVerifyErr::MissingElseRegion));
+}
+
+// `cf.if`'s regions must be single-block
+#[test]
+fn test_if_op_execute_region_in_then_branch_to_llvm_conversion() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+          ^entry():
+            llvm.func @test_if_execute_region: llvm.func <builtin.fp32 () variadic = false> [] {
+            ^entry():
+                zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                cond = llvm.icmp zero <ULT> one : builtin.integer i1;
+                inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+                false_val = builtin.constant <builtin.single 2.0> : builtin.fp32;
+                result = cf.if cond -> (builtin.fp32) {
+                    ^entry():
+                        v = cf.execute_region -> (builtin.fp32) {
+                            ^entry():
+                                cf.br ^next(inc)
+                            ^next(w : builtin.fp32):
+                                cf.yield w
+                        };
+                        cf.yield v
+                } else {
+                    ^entry():
+                        cf.yield false_val
+                };
+                llvm.return result
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    apply_dialect_conversion(ctx, &mut CFToLLVM, parsed_op).expect_ok(ctx);
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @test_if_execute_region: llvm.func <builtin.fp32 () variadic = false>
+              [] 
+            {
+              ^entry_block2v1() !1:
+                zero_v8 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                one_v9 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !3;
+                cond_v2 = llvm.icmp zero_v8 <ULT> one_v9 : builtin.integer i1 !4;
+                inc_v10 = llvm.constant <builtin.single 3.5> : builtin.fp32  !5;
+                false_val_v11 = llvm.constant <builtin.single 2> : builtin.fp32  !6;
+                llvm.cond_br if cond_v2 ^entry_block3v1() else ^entry_block5v3()
+
+              ^entry_block3v1() !7:
+                llvm.br ^entry_block4v1()
+
+              ^entry_block4v1() !8:
+                llvm.br ^next_block6v1(inc_v10) !9
+
+              ^next_block6v1(w_v7: builtin.fp32 ) !10:
+                llvm.br ^block8v1(w_v7)
+
+              ^block8v1(v_v13: builtin.fp32 ) !11:
+                llvm.br ^block7v1(v_v13)
+
+              ^entry_block5v3() !12:
+                llvm.br ^block7v1(false_val_v11)
+
+              ^block7v1(result_v12: builtin.fp32 ) !13:
+                llvm.return result_v12 !14
+            } !15
+        }"#]]
+    .assert_eq(&module_op.disp(ctx).to_string());
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    let llvm_ctx = LLVMContext::default();
+    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    llvm_ir
+        .verify()
+        .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
+        .unwrap();
+
+    initialize_native().expect("Failed to initialize native target for LLVM execution");
+    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
+    jit.add_module(llvm_ir)
+        .expect("Failed to add module to JIT");
+    let symbol_addr = jit
+        .lookup_symbol("test_if_execute_region")
+        .expect("Failed to lookup symbol");
+    assert!(symbol_addr != 0);
+    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let result = f();
+    // 0 < 1 is true, so the `then` region is taken; its `cf.execute_region`
+    // branches through a second block before yielding `inc` == 3.5.
+    assert_eq!(result, 3.5);
+}
+
+// `cf.if`'s regions must each have a single block.
+#[test]
+fn test_if_op_multi_block_region_rejected() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let input_ir = r#"
+        builtin.module @test_module {
+          ^entry():
+            llvm.func @test_if_multi_block: llvm.func <builtin.fp32 () variadic = false> [] {
+                ^entry():
+                    zero = builtin.constant <builtin.integer <0: i64>> : builtin.integer i64;
+                    one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                    cond = llvm.icmp zero <ULT> one : builtin.integer i1;
+                    inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
+                    false_val = builtin.constant <builtin.single 2.0> : builtin.fp32;
+                    result = cf.if cond -> (builtin.fp32) {
+                        ^entry():
+                            cf.br ^next(inc)
+                        ^next(v : builtin.fp32):
+                            cf.yield v
+                    } else {
+                        ^entry():
+                            cf.yield false_val
+                    };
+                    llvm.return result
+            }
+        }
+        "#;
+
+    let state_stream = state_stream_from_iterator(
+        input_ir.chars(),
+        parsable::State::new(ctx, location::Source::InMemory),
+    );
+    let parsed = spaced(Operation::top_level_parser())
+        .parse(state_stream)
+        .map(|(op, _)| op)
+        .map_err(|err| input_error_noloc!(err));
+
+    let parsed_op = parsed.expect_ok(ctx);
+    let module_op = Operation::get_op::<ModuleOp>(parsed_op, ctx).unwrap();
+
+    let err = verify_op(&module_op, ctx).unwrap_err();
+    err.err
+        .downcast_ref::<SingleBlockRegionVerifyErr>()
+        .unwrap();
 }

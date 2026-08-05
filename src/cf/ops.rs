@@ -44,13 +44,13 @@ use pliron::{
 use pliron::{
     builtin::op_interfaces::NRegionsInterface,
     combine::{
-        Parser,
+        Parser, attempt, optional,
         parser::char::{self, spaces},
     },
 };
 
 use crate::{
-    cf::op_interfaces::{YieldingOp, YieldingRegion},
+    cf::op_interfaces::{YieldingOp, YieldingRegions},
     index::types::IndexType,
 };
 
@@ -347,6 +347,244 @@ impl Parsable for CondBrOp {
     }
 }
 
+/// Represents an `if`/`then`/`else` conditional.
+///
+/// If `condition` is true, the `then` region is executed; otherwise, the
+/// `else` region is executed, if present.
+///
+/// ## Operand(s)
+/// | operand | description |
+/// |-----|-------|
+/// | `condition` | signless 1-bit integer |
+///
+/// ## Result(s)
+/// | result | description |
+/// |-----|-------|
+/// | `results` | (variadic) values produced by whichever region executes |
+///
+/// ## Region(s)
+///   - `then`: A single-block region, taking no arguments, executed when
+///   `condition` is true. Must `yield` this op's results.
+///   - `else` (optional): Same structure as `then`, executed when `condition`
+///   is false. Required whenever this op has results (so that a value is
+///   produced along every path); optional otherwise.
+///
+///   Use [ExecuteRegionOp] to embed multi-block control flow in either region.
+#[pliron_op(
+    name = "cf.if",
+    operands = (condition,),
+    interfaces = [YieldingRegions<YieldOp>, SingleBlockRegionInterface],
+)]
+pub struct IfOp;
+
+/// Type alias for the branch builder functions used in `IfOp::new`.
+pub type IfOpBranchBuilderFn<State> =
+    fn(ctx: &mut Context, state: State, inserter: &mut IRInserter<DummyListener>) -> Vec<Value>;
+
+impl IfOp {
+    /// Creates a new `IfOp`.
+    ///
+    /// `then_builder` populates the `then` region.
+    ///   - It is provided with an inserter, set to the start of the region's entry block.
+    ///   - It must return the values that this op should produce as results when
+    ///     `condition` is true.
+    ///
+    /// `else_builder`, if provided, populates the `else` region analogously, for
+    /// when `condition` is false. It must be provided whenever `result_types`
+    /// is non-empty.
+    ///
+    /// A [YieldOp] is automatically appended at the end of each region, taking
+    /// that region's builder's returned values as operands.
+    pub fn new<ThenState, ElseState>(
+        ctx: &mut Context,
+        condition: Value,
+        result_types: Vec<TypeHandle>,
+        then_builder: IfOpBranchBuilderFn<ThenState>,
+        then_builder_state: ThenState,
+        else_builder: Option<(IfOpBranchBuilderFn<ElseState>, ElseState)>,
+    ) -> Self {
+        assert!(
+            result_types.is_empty() || else_builder.is_some(),
+            "IfOp with results must have an else branch"
+        );
+
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            result_types,
+            vec![condition],
+            vec![],
+            0,
+        );
+        let op = IfOp { op };
+
+        Self::build_branch_region(ctx, op.get_operation(), then_builder, then_builder_state);
+        if let Some((else_builder, else_builder_state)) = else_builder {
+            Self::build_branch_region(ctx, op.get_operation(), else_builder, else_builder_state);
+        }
+
+        op
+    }
+
+    /// Appends a new region to `op`, with a single entry block, populated by `builder`.
+    fn build_branch_region<State>(
+        ctx: &mut Context,
+        op: Ptr<Operation>,
+        builder: IfOpBranchBuilderFn<State>,
+        builder_state: State,
+    ) {
+        let region = Operation::add_region(op, ctx);
+        let entry_block = BasicBlock::new(ctx, Some("entry".try_into().unwrap()), vec![]);
+        entry_block.insert_at_front(region, ctx);
+
+        let op_inserter = &mut IRInserter::new_at_block_start(entry_block);
+        let yield_values = builder(ctx, builder_state, op_inserter);
+        let yield_op = YieldOp::new(ctx, yield_values);
+        op_inserter.set_insertion_point(OpInsertionPoint::AtBlockEnd(
+            region
+                .deref(ctx)
+                .get_tail()
+                .expect("Region must have at least one block"),
+        ));
+        op_inserter.insert_op(ctx, &yield_op);
+    }
+
+    /// Whether the `else` region is present.
+    fn has_else_region(&self, ctx: &Context) -> bool {
+        self.get_operation().deref(ctx).num_regions() > 1
+    }
+
+    /// Get the `then` region.
+    pub fn get_then_region(&self, ctx: &Context) -> Ptr<Region> {
+        self.get_operation().deref(ctx).get_region(0)
+    }
+
+    /// Get the `else` region, if present.
+    pub fn get_else_region(&self, ctx: &Context) -> Option<Ptr<Region>> {
+        self.has_else_region(ctx)
+            .then(|| self.get_operation().deref(ctx).get_region(1))
+    }
+
+    /// Get the entry block of the `then` region.
+    pub fn get_then_entry(&self, ctx: &Context) -> Ptr<BasicBlock> {
+        self.get_entry(ctx, 0)
+    }
+
+    /// Get the entry block of the `else` region, if present.
+    pub fn get_else_entry(&self, ctx: &Context) -> Option<Ptr<BasicBlock>> {
+        self.has_else_region(ctx).then(|| self.get_entry(ctx, 1))
+    }
+
+    /// Get the `yield` operation ending the `then` region.
+    pub fn get_then_yield(&self, ctx: &Context) -> YieldOp {
+        self.get_yield(ctx, 0)
+    }
+
+    /// Get the `yield` operation ending the `else` region, if present.
+    pub fn get_else_yield(&self, ctx: &Context) -> Option<YieldOp> {
+        self.has_else_region(ctx).then(|| self.get_yield(ctx, 1))
+    }
+}
+
+impl Printable for IfOp {
+    fn fmt(
+        &self,
+        ctx: &Context,
+        state: &pliron::printable::State,
+        f: &mut std::fmt::Formatter<'_>,
+    ) -> std::fmt::Result {
+        let op = self.get_operation().deref(ctx);
+        if op.get_num_results() > 0 {
+            let results = iter_with_sep(op.results(), ListSeparator::CharSpace(','));
+            write!(f, "{} = ", results.disp(ctx))?;
+        }
+        let result_types = op.results().map(|r| r.get_type(ctx)).collect::<Vec<_>>();
+        write!(
+            f,
+            "{} {} -> ({}) {}",
+            Self::get_opid_static(),
+            self.get_operand_condition(ctx).disp(ctx),
+            list_with_sep(&result_types, ListSeparator::CharSpace(',')).disp(ctx),
+            self.get_then_region(ctx).print(ctx, state)
+        )?;
+        if let Some(else_region) = self.get_else_region(ctx) {
+            write!(f, " else {}", else_region.print(ctx, state))?;
+        }
+        writeln!(f)
+    }
+}
+
+impl Parsable for IfOp {
+    type Arg = Vec<(Identifier, Location)>;
+    type Parsed = OpObj;
+
+    fn parse<'a>(
+        state_stream: &mut pliron::parsable::StateStream<'a>,
+        results: Self::Arg,
+    ) -> pliron::parsable::ParseResult<'a, Self::Parsed> {
+        let (condition, _) = ssa_opd_parser().parse_stream(state_stream).into_result()?;
+
+        let (result_types, _) = spaced(char::string("->"))
+            .with(delimited_list_parser('(', ')', ',', type_parser()))
+            .parse_stream(state_stream)
+            .into_result()?;
+
+        let op = Operation::new(
+            state_stream.state.ctx,
+            Self::get_concrete_op_info(),
+            result_types,
+            vec![condition],
+            vec![],
+            0,
+        );
+
+        let opop = IfOp { op };
+
+        spaces()
+            .with(Region::parser(op))
+            .parse_stream(state_stream)
+            .into_result()?;
+
+        optional(attempt(
+            spaced(char::string("else")).with(Region::parser(op)),
+        ))
+        .parse_stream(state_stream)
+        .into_result()?;
+
+        process_parsed_ssa_defs(state_stream, &results, op)?;
+        Ok(OpObj::new(opop)).into_parse_result()
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum IfOpVerifyErr {
+    #[error("IfOp condition operand must be a signless 1-bit integer (i1)")]
+    IncorrectConditionType,
+    #[error("IfOp with results must have an else region")]
+    MissingElseRegion,
+}
+
+impl Verify for IfOp {
+    fn verify(&self, ctx: &Context) -> pliron::result::Result<()> {
+        let condition_ty = self.get_operand_condition(ctx).get_type(ctx);
+        let condition_ty = condition_ty.deref(ctx);
+        let Some(condition_int_ty) = condition_ty.downcast_ref::<IntegerType>() else {
+            return verify_err!(self.loc(ctx), IfOpVerifyErr::IncorrectConditionType);
+        };
+        if condition_int_ty.width() != 1 || condition_int_ty.signedness() != Signedness::Signless {
+            return verify_err!(self.loc(ctx), IfOpVerifyErr::IncorrectConditionType);
+        }
+        // IfOp with results must have an else region, so that a value is produced along every path.
+        if self.get_else_region(ctx).is_none()
+            && self.get_operation().deref(ctx).get_num_results() > 0
+        {
+            return verify_err!(self.loc(ctx), IfOpVerifyErr::MissingElseRegion);
+        }
+
+        Ok(())
+    }
+}
+
 /// Represents a `for` loop with an initial value, an upper bound, and a step.
 /// Additional loop-carried variables can be specified as operands and results.
 /// The loop body is defined in a region that takes the loop induction variable
@@ -373,7 +611,13 @@ impl Parsable for CondBrOp {
 ///   Use [ExecuteRegionOp] to embed multi-block control flow in the loop body.
 #[pliron_op(
     name = "cf.for",
-    interfaces = [OneRegionInterface, NRegionsInterface<1>, OperandSegmentInterface, YieldingRegion<YieldOp>, SingleBlockRegionInterface],
+    interfaces = [
+        OneRegionInterface,
+        NRegionsInterface<1>,
+        OperandSegmentInterface,
+        YieldingRegions<YieldOp>,
+        SingleBlockRegionInterface
+    ],
 )]
 pub struct ForOp;
 
@@ -491,12 +735,12 @@ impl ForOp {
 
     /// Get the induction variable of the loop.
     pub fn get_induction_variable(&self, ctx: &Context) -> Value {
-        self.get_entry(ctx).deref(ctx).get_argument(0)
+        self.get_entry(ctx, 0).deref(ctx).get_argument(0)
     }
 
     /// Get the loop carried variables (block arguments).
     pub fn get_loop_carried_variables(&self, ctx: &Context) -> Vec<Value> {
-        self.get_entry(ctx)
+        self.get_entry(ctx, 0)
             .deref(ctx)
             .arguments()
             .skip(1)
@@ -660,7 +904,13 @@ pub type NDForOpBodyBuilderFn<State> = fn(
 ///   Use [ExecuteRegionOp] to embed multi-block control flow in the loop body.
 #[pliron_op(
     name = "cf.nd_for",
-    interfaces = [OneRegionInterface, NRegionsInterface<1>, OperandSegmentInterface, YieldingRegion<YieldOp>, SingleBlockRegionInterface],
+    interfaces = [
+        OneRegionInterface,
+        NRegionsInterface<1>,
+        OperandSegmentInterface,
+        YieldingRegions<YieldOp>,
+        SingleBlockRegionInterface
+    ],
 )]
 pub struct NDForOp;
 
@@ -805,7 +1055,7 @@ impl NDForOp {
 
     /// Get the induction variables of the loop.
     pub fn get_induction_variables(&self, ctx: &Context) -> Vec<Value> {
-        self.get_entry(ctx)
+        self.get_entry(ctx, 0)
             .deref(ctx)
             .arguments()
             .collect::<Vec<_>>()
@@ -813,7 +1063,7 @@ impl NDForOp {
 
     /// Get the number of induction variables (i.e., loop dimensions).
     pub fn get_num_induction_variables(&self, ctx: &Context) -> usize {
-        self.get_entry(ctx).deref(ctx).get_num_arguments()
+        self.get_entry(ctx, 0).deref(ctx).get_num_arguments()
     }
 
     /// Create a new `NDForOp` with the specified bounds and steps.
@@ -891,7 +1141,7 @@ impl NDForOp {
 ///   The exit (lexicographically last) block must `yield` the results of this op.
 #[pliron_op(
     name = "cf.execute_region",
-    interfaces = [OneRegionInterface, NRegionsInterface<1>, YieldingRegion<YieldOp>],
+    interfaces = [OneRegionInterface, NRegionsInterface<1>, YieldingRegions<YieldOp>],
 )]
 pub struct ExecuteRegionOp;
 
@@ -1010,7 +1260,7 @@ pub enum ExecuteRegionOpVerifyErr {
 
 impl Verify for ExecuteRegionOp {
     fn verify(&self, ctx: &Context) -> pliron::result::Result<()> {
-        if self.get_entry(ctx).deref(ctx).get_num_arguments() != 0 {
+        if self.get_entry(ctx, 0).deref(ctx).get_num_arguments() != 0 {
             return verify_err!(self.loc(ctx), ExecuteRegionOpVerifyErr::RegionHasArguments);
         }
         Ok(())
