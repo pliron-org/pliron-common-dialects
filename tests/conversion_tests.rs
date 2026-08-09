@@ -18,7 +18,7 @@ use pliron::{
     printable::Printable,
     result::ExpectOk,
 };
-use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::LLVMLLJIT, target::initialize_native};
+use pliron_llvm::llvm_sys::{core::LLVMContext, lljit::SimpleJIT};
 
 use expect_test::expect;
 use pliron_common_dialects::cf::{
@@ -149,15 +149,9 @@ fn test_for_op_to_llvm_conversion() {
     .assert_eq(&llvm_ir.to_string());
 
     // Let's try and execute this function
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_for")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f =
+        unsafe { jit.lookup_symbol::<fn() -> f32>("test_for") }.expect("Failed to lookup symbol");
     let result = f();
     assert_eq!(result, 36.0);
 }
@@ -344,15 +338,9 @@ fn test_ndfor_op_to_llvm_conversion() {
     "#]].assert_eq(&llvm_ir.to_string());
 
     // Let's try and execute this function
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_ndfor")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f =
+        unsafe { jit.lookup_symbol::<fn() -> f32>("test_ndfor") }.expect("Failed to lookup symbol");
     let result = f();
     // The loop iterates 10 * 11 = 110 times, and each time it adds 1.5 to the accumulator, so the final result should be 165.0
     assert_eq!(result, 165.0);
@@ -576,15 +564,9 @@ fn test_execute_region_op_to_llvm_conversion() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_execute_region")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn() -> f32>("test_execute_region") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
     let result = f();
     assert_eq!(result, 36.0);
 }
@@ -706,15 +688,9 @@ fn test_cond_br_op_to_llvm_conversion() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_cond_br")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn() -> f32>("test_cond_br") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
     let result = f();
     // 0 < 1 is true, so the `true_blk` branch (returning `true_val` == 1.0) is taken.
     assert_eq!(result, 1.0);
@@ -832,15 +808,9 @@ fn test_if_op_with_else_to_llvm_conversion() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_if")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f =
+        unsafe { jit.lookup_symbol::<fn() -> f32>("test_if") }.expect("Failed to lookup symbol");
     let result = f();
     // 0 < 1 is true, so the `then` region (yielding `true_val` == 1.0) is taken.
     assert_eq!(result, 1.0);
@@ -876,15 +846,9 @@ fn test_if_op_with_else_false_branch_to_llvm_conversion() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_if")
-        .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f =
+        unsafe { jit.lookup_symbol::<fn() -> f32>("test_if") }.expect("Failed to lookup symbol");
     let result = f();
     // 0 > 1 is false, so the `else` region (yielding `false_val` == 2.0) is taken.
     assert_eq!(result, 2.0);
@@ -962,15 +926,9 @@ fn test_if_op_without_else_to_llvm_conversion() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_if_no_else")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn() -> f32>("test_if_no_else") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
     let result = f();
     assert_eq!(result, 42.0);
 }
@@ -1108,15 +1066,9 @@ fn test_if_op_execute_region_in_then_branch_to_llvm_conversion() {
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
         .unwrap();
 
-    initialize_native().expect("Failed to initialize native target for LLVM execution");
-    let jit = LLVMLLJIT::new_with_default_builder().expect("Failed to create LLJIT");
-    jit.add_module(llvm_ir)
-        .expect("Failed to add module to JIT");
-    let symbol_addr = jit
-        .lookup_symbol("test_if_execute_region")
+    let jit = SimpleJIT::new(llvm_ctx, llvm_ir).expect("Failed to create JIT");
+    let f = unsafe { jit.lookup_symbol::<fn() -> f32>("test_if_execute_region") }
         .expect("Failed to lookup symbol");
-    assert!(symbol_addr != 0);
-    let f = unsafe { std::mem::transmute::<u64, fn() -> f32>(symbol_addr) };
     let result = f();
     // 0 < 1 is true, so the `then` region is taken; its `cf.execute_region`
     // branches through a second block before yielding `inc` == 3.5.
