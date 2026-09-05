@@ -4,8 +4,8 @@
 //! Convert index dialect to LLVM dialect.
 
 use pliron::{
-    attribute::AttrObj,
     builtin::{
+        attr_interfaces::TypedAttrInterface,
         attributes::IntegerAttr,
         op_interfaces::OneOpdInterface,
         ops::ConstantOp,
@@ -90,7 +90,7 @@ impl ToLLVMDialect for IntegerToIndexOp {
 
 impl ConstantIndexAttr {
     /// Convert the constant index attribute to an LLVM attribute.
-    fn to_llvm_attr(&self, ctx: &mut Context) -> Result<AttrObj> {
+    fn to_llvm_attr(&self, ctx: &mut Context) -> Result<Box<dyn TypedAttrInterface>> {
         // Convert the constant index value to an LLVM attribute.
         let int_ty = IntegerType::get(ctx, 64, Signedness::Signless);
         let llvm_attr = IntegerAttr::new(
@@ -100,6 +100,6 @@ impl ConstantIndexAttr {
                 64.try_into().unwrap(),
             ),
         );
-        Ok(llvm_attr.into())
+        Ok(Box::new(llvm_attr))
     }
 }

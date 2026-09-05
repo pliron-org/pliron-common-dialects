@@ -6,6 +6,7 @@
 use pliron::{
     basic_block::BasicBlock,
     builtin::{
+        given_names::set_block_arg_name,
         op_interfaces::{
             BranchOpInterface, IsTerminatorInterface, NResultsInterface, NSuccsInterface,
             OneRegionInterface, OneSuccInterface, OperandSegmentInterface,
@@ -15,7 +16,6 @@ use pliron::{
     },
     common_traits::{Named, Verify},
     context::{Context, Ptr},
-    debug_info::set_block_arg_name,
     derive::{op_interface_impl, pliron_op},
     identifier::Identifier,
     input_err,
