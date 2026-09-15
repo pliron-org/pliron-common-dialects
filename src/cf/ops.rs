@@ -17,6 +17,7 @@ use pliron::{
     common_traits::{Named, Verify},
     context::{Context, Ptr},
     derive::{op_interface_impl, pliron_op},
+    ident,
     identifier::Identifier,
     input_err,
     irbuild::{
@@ -434,7 +435,7 @@ impl IfOp {
         builder_state: State,
     ) {
         let region = Operation::add_region(op, ctx);
-        let entry_block = BasicBlock::new(ctx, Some("entry".try_into().unwrap()), vec![]);
+        let entry_block = BasicBlock::new(ctx, Some(ident!("entry")), vec![]);
         entry_block.insert_at_front(region, ctx);
 
         let op_inserter = &mut IRInserter::new_at_block_start(entry_block);
@@ -656,7 +657,7 @@ impl ForOp {
         let region_arg_types = std::iter::once(index_ty.into())
             .chain(result_types.iter().cloned())
             .collect();
-        let region_arg_names = std::iter::once("iv".try_into().unwrap())
+        let region_arg_names = std::iter::once(ident!("iv"))
             .chain(iter_args_init.iter().enumerate().map(|(lv_i, v)| {
                 v.given_name(ctx)
                     .unwrap_or(format!("loop_var_{}", lv_i).try_into().unwrap())
@@ -682,7 +683,7 @@ impl ForOp {
 
         // Set up the region, its entry block and arguments.
         let region = op.get_region(ctx);
-        let entry_block = BasicBlock::new(ctx, Some("entry".try_into().unwrap()), region_arg_types);
+        let entry_block = BasicBlock::new(ctx, Some(ident!("entry")), region_arg_types);
         entry_block.insert_at_front(region, ctx);
         for (arg_idx, name) in region_arg_names.into_iter().enumerate() {
             set_block_arg_name(ctx, entry_block, arg_idx, Some(name));
@@ -1107,7 +1108,7 @@ impl NDForOp {
 
         // Set up the region and its entry block.
         let region = op.get_region(ctx);
-        let entry_block = BasicBlock::new(ctx, Some("entry".try_into().unwrap()), region_arg_types);
+        let entry_block = BasicBlock::new(ctx, Some(ident!("entry")), region_arg_types);
         entry_block.insert_at_front(region, ctx);
 
         // Populate the body.
@@ -1177,7 +1178,7 @@ impl ExecuteRegionOp {
 
         // Set up the region and its entry block.
         let region = op.get_region(ctx);
-        let entry_block = BasicBlock::new(ctx, Some("entry".try_into().unwrap()), vec![]);
+        let entry_block = BasicBlock::new(ctx, Some(ident!("entry")), vec![]);
         entry_block.insert_at_front(region, ctx);
 
         // Populate the body.

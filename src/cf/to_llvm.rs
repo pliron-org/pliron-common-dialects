@@ -13,6 +13,7 @@ use pliron::{
     },
     context::{Context, Ptr},
     derive::op_interface_impl,
+    ident,
     irbuild::{
         dialect_conversion::{DialectConversion, DialectConversionRewriter, OperandsInfo},
         inserter::{BlockInsertionPoint, IRInserter, Inserter, OpInsertionPoint},
@@ -140,7 +141,7 @@ impl ToLLVMDialect for ForOp {
         let header = rewriter.create_block(
             ctx,
             BlockInsertionPoint::AfterBlock(pre_header),
-            Some("for_op_header".try_into().unwrap()),
+            Some(ident!("for_op_header")),
             std::iter::once(iv_ty).chain(iter_var_types).collect(),
         );
         header.deref_mut(ctx).set_loc(self_op_loc);
