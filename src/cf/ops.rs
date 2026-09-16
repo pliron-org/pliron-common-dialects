@@ -9,7 +9,7 @@ use pliron::{
         given_names::set_block_arg_name,
         op_interfaces::{
             BranchOpInterface, IsTerminatorInterface, NResultsInterface, NSuccsInterface,
-            OneRegionInterface, OneSuccInterface, OperandSegmentInterface,
+            OneRegionInterface, OneSuccInterface, OperandSegmentInterface, SegmentNOfType,
             SingleBlockRegionInterface,
         },
         types::{IntegerType, Signedness},
@@ -616,6 +616,7 @@ impl Verify for IfOp {
         OneRegionInterface,
         NRegionsInterface<1>,
         OperandSegmentInterface,
+        SegmentNOfType<0, IndexType>,
         YieldingRegions<YieldOp>,
         SingleBlockRegionInterface
     ],
@@ -830,9 +831,7 @@ pub enum ForOpVerifyErr {
         "ForOp count mismatch: iter args initializers, number of results, loop carried variables"
     )]
     IterArgsCountMismatch,
-    #[error(
-        "ForOp induction variable, lower bound, upper bound, and step types must all be IndexType"
-    )]
+    #[error("ForOp induction variable type must be IndexType")]
     InductionVarTypeMismatch,
     #[error(
         "ForOp result types, iter args initializers, and loop carried variable types must match"
@@ -861,14 +860,7 @@ impl Verify for ForOp {
         }
 
         let iv_ty = self.get_induction_variable(ctx).get_type(ctx);
-        let lb_ty = self.get_lower_bound(ctx).get_type(ctx);
-        let ub_ty = self.get_upper_bound(ctx).get_type(ctx);
-        let step_ty = self.get_step(ctx).get_type(ctx);
-        if iv_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-            || lb_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-            || ub_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-            || step_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-        {
+        if iv_ty.deref(ctx).downcast_ref::<IndexType>().is_none() {
             return verify_err!(self.loc(ctx), ForOpVerifyErr::InductionVarTypeMismatch);
         }
 
@@ -909,6 +901,9 @@ pub type NDForOpBodyBuilderFn<State> = fn(
         OneRegionInterface,
         NRegionsInterface<1>,
         OperandSegmentInterface,
+        SegmentNOfType<0, IndexType>,
+        SegmentNOfType<1, IndexType>,
+        SegmentNOfType<2, IndexType>,
         YieldingRegions<YieldOp>,
         SingleBlockRegionInterface
     ],
@@ -999,10 +994,6 @@ pub enum NDForOpVerifyErr {
         "NDForOp count mismatch: lower bounds, upper bounds, and steps must all have the same number of operands"
     )]
     IterArgsCountMismatch,
-    #[error(
-        "NDForOp induction variables, lower bounds, upper bounds, and steps must all be of IndexType"
-    )]
-    InductionVarTypeMismatch,
 }
 
 impl Verify for NDForOp {
@@ -1016,22 +1007,6 @@ impl Verify for NDForOp {
             || self.segment_size(ctx, 0) != self.segment_size(ctx, 2)
         {
             return verify_err!(self.loc(ctx), NDForOpVerifyErr::IterArgsCountMismatch);
-        }
-
-        let lower_bounds = self.get_lower_bounds(ctx);
-        let upper_bounds = self.get_upper_bounds(ctx);
-        let steps = self.get_steps(ctx);
-
-        for i in 0..lower_bounds.len() {
-            let lb_ty = lower_bounds[i].get_type(ctx);
-            let ub_ty = upper_bounds[i].get_type(ctx);
-            let step_ty = steps[i].get_type(ctx);
-            if lb_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-                || ub_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-                || step_ty.deref(ctx).downcast_ref::<IndexType>().is_none()
-            {
-                return verify_err!(self.loc(ctx), NDForOpVerifyErr::InductionVarTypeMismatch);
-            }
         }
 
         Ok(())
