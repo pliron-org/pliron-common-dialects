@@ -3,6 +3,8 @@
 
 //! Control-flow ops and related functionality.
 
+use std::ops::Range;
+
 use pliron::{
     basic_block::BasicBlock,
     builtin::{
@@ -159,9 +161,13 @@ impl BrOp {
 
 #[op_interface_impl]
 impl BranchOpInterface for BrOp {
-    fn successor_operands(&self, ctx: &Context, succ_idx: usize) -> Vec<Value> {
+    fn verify_successor_operand_layout(&self, ctx: &Context) -> pliron::result::Result<()> {
+        <Self as OneSuccInterface>::verify(self, ctx)
+    }
+
+    fn successor_operand_range(&self, ctx: &Context, succ_idx: usize) -> Range<usize> {
         assert!(succ_idx == 0, "BrOp has exactly one successor");
-        self.get_operation().deref(ctx).operands().collect()
+        0..self.get_operation().deref(ctx).get_num_operands()
     }
 
     fn add_successor_operand(&self, ctx: &mut Context, succ_idx: usize, operand: Value) -> usize {
@@ -254,17 +260,27 @@ impl Verify for CondBrOp {
 }
 
 #[op_interface_impl]
-impl OperandSegmentInterface for CondBrOp {}
+impl OperandSegmentInterface for CondBrOp {
+    fn expected_num_segments(&self, _ctx: &Context) -> Option<usize> {
+        // The condition, the true destination operands and the false destination operands.
+        Some(3)
+    }
+}
 
 #[op_interface_impl]
 impl BranchOpInterface for CondBrOp {
-    fn successor_operands(&self, ctx: &Context, succ_idx: usize) -> Vec<Value> {
+    fn verify_successor_operand_layout(&self, ctx: &Context) -> pliron::result::Result<()> {
+        <Self as OperandSegmentInterface>::verify(self, ctx)?;
+        <Self as NSuccsInterface<2>>::verify(self, ctx)
+    }
+
+    fn successor_operand_range(&self, ctx: &Context, succ_idx: usize) -> Range<usize> {
         assert!(
             succ_idx == 0 || succ_idx == 1,
             "CondBrOp has exactly two successors"
         );
         // Skip the first segment, which is the condition.
-        self.get_segment(ctx, succ_idx + 1)
+        self.segment_range(ctx, succ_idx + 1)
     }
 
     fn add_successor_operand(&self, ctx: &mut Context, succ_idx: usize, operand: Value) -> usize {
@@ -615,13 +631,20 @@ impl Verify for IfOp {
     interfaces = [
         OneRegionInterface,
         NRegionsInterface<1>,
-        OperandSegmentInterface,
         SegmentNOfType<0, IndexType>,
         YieldingRegions<YieldOp>,
         SingleBlockRegionInterface
     ],
 )]
 pub struct ForOp;
+
+#[op_interface_impl]
+impl OperandSegmentInterface for ForOp {
+    fn expected_num_segments(&self, _ctx: &Context) -> Option<usize> {
+        // The lower bound, upper bound and step, and the initial loop-carried values.
+        Some(2)
+    }
+}
 
 /// Type alias for the body builder function used in `ForOp::new`.
 pub type ForOpBodyBuilderFn<State> = fn(
@@ -900,7 +923,6 @@ pub type NDForOpBodyBuilderFn<State> = fn(
     interfaces = [
         OneRegionInterface,
         NRegionsInterface<1>,
-        OperandSegmentInterface,
         SegmentNOfType<0, IndexType>,
         SegmentNOfType<1, IndexType>,
         SegmentNOfType<2, IndexType>,
@@ -909,6 +931,14 @@ pub type NDForOpBodyBuilderFn<State> = fn(
     ],
 )]
 pub struct NDForOp;
+
+#[op_interface_impl]
+impl OperandSegmentInterface for NDForOp {
+    fn expected_num_segments(&self, _ctx: &Context) -> Option<usize> {
+        // The lower bounds, the upper bounds and the steps.
+        Some(3)
+    }
+}
 
 impl Printable for NDForOp {
     fn fmt(
