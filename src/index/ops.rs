@@ -17,6 +17,7 @@ use pliron::{
     op::Op,
     operation::Operation,
     result::Result,
+    value::Value,
     verify_err,
 };
 use pliron_llvm::op_interfaces::CastOpInterface;
@@ -124,5 +125,63 @@ impl Verify for IntegerToIndexOp {
         }
 
         Ok(())
+    }
+}
+
+/// Addition of two [IndexType] values.
+#[pliron_op(
+    name = "index.add",
+    interfaces = [
+        NOpdsInterface<2>,
+        OneResultInterface,
+        AllOperandsOfType<IndexType>,
+        AllResultsOfType<IndexType>
+    ],
+    format = "$0 `, ` $1 ` : ` type($0)",
+    verifier = "succ",
+)]
+pub struct IndexAddOp;
+
+impl IndexAddOp {
+    /// Create a new IndexAddOp that computes `lhs + rhs`.
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![IndexType::get(ctx).into()],
+            vec![lhs, rhs],
+            vec![],
+            0,
+        );
+        Self { op }
+    }
+}
+
+/// Multiplication of two [IndexType] values.
+#[pliron_op(
+    name = "index.mul",
+    interfaces = [
+        NOpdsInterface<2>,
+        OneResultInterface,
+        AllOperandsOfType<IndexType>,
+        AllResultsOfType<IndexType>,
+    ],
+    format = "$0 `, ` $1 ` : ` type($0)",
+    verifier = "succ",
+)]
+pub struct IndexMulOp;
+
+impl IndexMulOp {
+    /// Create a new IndexMulOp that computes `lhs * rhs`.
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
+        let op = Operation::new(
+            ctx,
+            Self::get_concrete_op_info(),
+            vec![IndexType::get(ctx).into()],
+            vec![lhs, rhs],
+            vec![],
+            0,
+        );
+        Self { op }
     }
 }

@@ -23,11 +23,14 @@ use pliron::{
     r#type::TypeHandle,
     utils::apint::APInt,
 };
-use pliron_llvm::{ToLLVMDialect, ToLLVMType};
+use pliron_llvm::{
+    ToLLVMDialect, ToLLVMType, attributes::IntegerOverflowFlagsAttr,
+    op_interfaces::IntBinArithOpWithOverflowFlag,
+};
 
 use crate::index::{
     attributes::ConstantIndexAttr,
-    ops::{IndexConstantOp, IndexToIntegerOp, IntegerToIndexOp},
+    ops::{IndexAddOp, IndexConstantOp, IndexMulOp, IndexToIntegerOp, IntegerToIndexOp},
     types::IndexType,
 };
 
@@ -84,6 +87,54 @@ impl ToLLVMDialect for IntegerToIndexOp {
     ) -> Result<()> {
         let int_op = self.get_operand(ctx);
         rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![int_op]);
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl ToLLVMDialect for IndexAddOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let (lhs, rhs) = {
+            let op = self.get_operation().deref(ctx);
+            (op.get_operand(0), op.get_operand(1))
+        };
+        let add = pliron_llvm::ops::AddOp::new_with_overflow_flag(
+            ctx,
+            lhs,
+            rhs,
+            IntegerOverflowFlagsAttr::default(),
+        );
+        rewriter.insert_op(ctx, &add);
+        rewriter.replace_operation(ctx, self.get_operation(), add.get_operation());
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl ToLLVMDialect for IndexMulOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let (lhs, rhs) = {
+            let op = self.get_operation().deref(ctx);
+            (op.get_operand(0), op.get_operand(1))
+        };
+        let mul = pliron_llvm::ops::MulOp::new_with_overflow_flag(
+            ctx,
+            lhs,
+            rhs,
+            IntegerOverflowFlagsAttr::default(),
+        );
+        rewriter.insert_op(ctx, &mul);
+        rewriter.replace_operation(ctx, self.get_operation(), mul.get_operation());
         Ok(())
     }
 }
