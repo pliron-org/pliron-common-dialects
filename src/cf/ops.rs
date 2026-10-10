@@ -11,7 +11,8 @@ use pliron::{
         given_names::set_block_arg_name,
         op_interfaces::{
             BranchOpInterface, IsTerminatorInterface, NResultsInterface, NSuccsInterface,
-            OneRegionInterface, OneSuccInterface, OperandSegmentInterface, SegmentNOfType,
+            OneRegionInterface, OneSuccInterface, OperandSegmentInterface, RegionBranchOpInterface,
+            RegionBranchPoint, RegionEdge, RegionSuccessor, SegmentNOfType,
             SingleBlockRegionInterface,
         },
         types::{IntegerType, Signedness},
@@ -41,7 +42,7 @@ use pliron::{
     printable::{ListSeparator, Printable},
     region::Region,
     r#type::{TypeHandle, Typed},
-    value::Value,
+    value::{Use, Value},
     verify_err,
 };
 use pliron::{
@@ -591,13 +592,6 @@ impl Verify for IfOp {
         if condition_int_ty.width() != 1 || condition_int_ty.signedness() != Signedness::Signless {
             return verify_err!(self.loc(ctx), IfOpVerifyErr::IncorrectConditionType);
         }
-        // IfOp with results must have an else region, so that a value is produced along every path.
-        if self.get_else_region(ctx).is_none()
-            && self.get_operation().deref(ctx).get_num_results() > 0
-        {
-            return verify_err!(self.loc(ctx), IfOpVerifyErr::MissingElseRegion);
-        }
-
         Ok(())
     }
 }
@@ -851,37 +845,15 @@ impl Parsable for ForOp {
 #[derive(thiserror::Error, Debug)]
 pub enum ForOpVerifyErr {
     #[error(
-        "ForOp count mismatch: iter args initializers, number of results, loop carried variables"
+        "ForOp count mismatch: iter args initializers, number of results, loop carried variables, yielded values"
     )]
     IterArgsCountMismatch,
     #[error("ForOp induction variable type must be IndexType")]
     InductionVarTypeMismatch,
-    #[error(
-        "ForOp result types, iter args initializers, and loop carried variable types must match"
-    )]
-    IterArgsTypeMismatch,
 }
 
 impl Verify for ForOp {
     fn verify(&self, ctx: &Context) -> pliron::result::Result<()> {
-        let results: Vec<_> = self.get_operation().deref(ctx).results().collect();
-        let iter_args_init = self.get_iter_args_init(ctx);
-        let loop_carried_vars = self.get_loop_carried_variables(ctx);
-
-        if results.len() != iter_args_init.len() || results.len() != loop_carried_vars.len() {
-            return verify_err!(self.loc(ctx), ForOpVerifyErr::IterArgsCountMismatch);
-        }
-
-        // Verify that the types of results, initializers, and loop-carried variables match.
-        for i in 0..results.len() {
-            let res_ty = results[i].get_type(ctx);
-            let init_ty = iter_args_init[i].get_type(ctx);
-            let var_ty = loop_carried_vars[i].get_type(ctx);
-            if res_ty != init_ty || res_ty != var_ty {
-                return verify_err!(self.loc(ctx), ForOpVerifyErr::IterArgsTypeMismatch);
-            }
-        }
-
         let iv_ty = self.get_induction_variable(ctx).get_type(ctx);
         if iv_ty.deref(ctx).downcast_ref::<IndexType>().is_none() {
             return verify_err!(self.loc(ctx), ForOpVerifyErr::InductionVarTypeMismatch);
@@ -1270,5 +1242,201 @@ impl Verify for ExecuteRegionOp {
             return verify_err!(self.loc(ctx), ExecuteRegionOpVerifyErr::RegionHasArguments);
         }
         Ok(())
+    }
+}
+
+/// Pair operands of `source`, starting at operand `start`, with `receivers`.
+fn flows_from(
+    ctx: &Context,
+    source: Ptr<Operation>,
+    start: usize,
+    receivers: impl IntoIterator<Item = Value>,
+) -> Vec<(Use<Value>, Value)> {
+    receivers
+        .into_iter()
+        .enumerate()
+        .map(|(i, receiver)| (source.deref(ctx).get_operand_as_use(start + i), receiver))
+        .collect()
+}
+
+#[op_interface_impl]
+impl RegionBranchOpInterface for IfOp {
+    fn verify_region_edges_layout(&self, ctx: &Context) -> pliron::result::Result<()> {
+        // IfOp with results must have an else region, so that a value is produced along every path.
+        if self.get_else_region(ctx).is_none()
+            && self.get_operation().deref(ctx).get_num_results() > 0
+        {
+            return verify_err!(self.loc(ctx), IfOpVerifyErr::MissingElseRegion);
+        }
+        <Self as YieldingRegions<YieldOp>>::verify(self, ctx)
+    }
+
+    fn operands_used_in_regions(&self, _ctx: &Context) -> Vec<Use<Value>> {
+        // The condition is read only when control enters the op.
+        vec![]
+    }
+
+    fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
+        let op = self.get_operation();
+        let num_regions = op.deref(ctx).num_regions();
+        let mut edges: Vec<RegionEdge> = op
+            .deref(ctx)
+            .regions()
+            .map(|region| RegionEdge {
+                from: RegionBranchPoint::Parent,
+                to: RegionSuccessor::Region(region),
+                flows: vec![],
+            })
+            .collect();
+        if !self.has_else_region(ctx) {
+            edges.push(RegionEdge {
+                from: RegionBranchPoint::Parent,
+                to: RegionSuccessor::After,
+                flows: vec![],
+            });
+        }
+        for reg_idx in 0..num_regions {
+            let yield_op = self.get_yield(ctx, reg_idx).get_operation();
+            edges.push(RegionEdge {
+                from: RegionBranchPoint::Terminator(yield_op),
+                to: RegionSuccessor::After,
+                flows: flows_from(ctx, yield_op, 0, op.deref(ctx).results()),
+            });
+        }
+        edges
+    }
+}
+
+#[op_interface_impl]
+impl RegionBranchOpInterface for ForOp {
+    fn verify_region_edges_layout(&self, ctx: &Context) -> pliron::result::Result<()> {
+        <Self as NRegionsInterface<1>>::verify(self, ctx)?;
+        <Self as YieldingRegions<YieldOp>>::verify(self, ctx)?;
+        <Self as OperandSegmentInterface>::verify(self, ctx)?;
+        let num_results = self.get_operation().deref(ctx).get_num_results();
+        let num_yielded = self
+            .get_yield(ctx, 0)
+            .get_operation()
+            .deref(ctx)
+            .get_num_operands();
+        if self.get_iter_args_init(ctx).len() != num_results
+            || self.get_loop_carried_variables(ctx).len() != num_results
+            || num_yielded != num_results
+        {
+            return verify_err!(self.loc(ctx), ForOpVerifyErr::IterArgsCountMismatch);
+        }
+        Ok(())
+    }
+
+    fn operands_used_in_regions(&self, ctx: &Context) -> Vec<Use<Value>> {
+        // The loop reads its upper bound and step on each iteration.
+        // It reads the lower bound only when control enters it.
+        let start = self.segment_range(ctx, 0).start;
+        let op = self.get_operation().deref(ctx);
+        vec![
+            op.get_operand_as_use(start + 1),
+            op.get_operand_as_use(start + 2),
+        ]
+    }
+
+    fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
+        let op = self.get_operation();
+        let region = op.deref(ctx).get_region(0);
+        let yield_op = self.get_yield(ctx, 0).get_operation();
+        let init_start = self.segment_range(ctx, 1).start;
+        let loop_carried = self.get_loop_carried_variables(ctx);
+        let results: Vec<_> = op.deref(ctx).results().collect();
+        vec![
+            RegionEdge {
+                from: RegionBranchPoint::Parent,
+                to: RegionSuccessor::Region(region),
+                flows: flows_from(ctx, op, init_start, loop_carried.clone()),
+            },
+            RegionEdge {
+                from: RegionBranchPoint::Parent,
+                to: RegionSuccessor::After,
+                flows: flows_from(ctx, op, init_start, results.clone()),
+            },
+            RegionEdge {
+                from: RegionBranchPoint::Terminator(yield_op),
+                to: RegionSuccessor::Region(region),
+                flows: flows_from(ctx, yield_op, 0, loop_carried),
+            },
+            RegionEdge {
+                from: RegionBranchPoint::Terminator(yield_op),
+                to: RegionSuccessor::After,
+                flows: flows_from(ctx, yield_op, 0, results),
+            },
+        ]
+    }
+}
+
+#[op_interface_impl]
+impl RegionBranchOpInterface for NDForOp {
+    fn verify_region_edges_layout(&self, ctx: &Context) -> pliron::result::Result<()> {
+        <Self as NRegionsInterface<1>>::verify(self, ctx)?;
+        <Self as YieldingRegions<YieldOp>>::verify(self, ctx)
+    }
+
+    fn operands_used_in_regions(&self, ctx: &Context) -> Vec<Use<Value>> {
+        // The loop reads its upper bounds and steps on each iteration.
+        // It reads the lower bounds only when control enters it.
+        let op = self.get_operation().deref(ctx);
+        self.segment_range(ctx, 1)
+            .chain(self.segment_range(ctx, 2))
+            .map(|idx| op.get_operand_as_use(idx))
+            .collect()
+    }
+
+    fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
+        let op = self.get_operation();
+        let region = op.deref(ctx).get_region(0);
+        let yield_op = self.get_yield(ctx, 0).get_operation();
+        let edge = |from, to| RegionEdge {
+            from,
+            to,
+            flows: vec![],
+        };
+        vec![
+            edge(RegionBranchPoint::Parent, RegionSuccessor::Region(region)),
+            edge(RegionBranchPoint::Parent, RegionSuccessor::After),
+            edge(
+                RegionBranchPoint::Terminator(yield_op),
+                RegionSuccessor::Region(region),
+            ),
+            edge(
+                RegionBranchPoint::Terminator(yield_op),
+                RegionSuccessor::After,
+            ),
+        ]
+    }
+}
+
+#[op_interface_impl]
+impl RegionBranchOpInterface for ExecuteRegionOp {
+    fn verify_region_edges_layout(&self, ctx: &Context) -> pliron::result::Result<()> {
+        <Self as NRegionsInterface<1>>::verify(self, ctx)?;
+        <Self as YieldingRegions<YieldOp>>::verify(self, ctx)
+    }
+
+    fn operands_used_in_regions(&self, _ctx: &Context) -> Vec<Use<Value>> {
+        vec![]
+    }
+
+    fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
+        let op = self.get_operation();
+        let yield_op = self.get_yield(ctx, 0).get_operation();
+        vec![
+            RegionEdge {
+                from: RegionBranchPoint::Parent,
+                to: RegionSuccessor::Region(op.deref(ctx).get_region(0)),
+                flows: vec![],
+            },
+            RegionEdge {
+                from: RegionBranchPoint::Terminator(yield_op),
+                to: RegionSuccessor::After,
+                flows: flows_from(ctx, yield_op, 0, op.deref(ctx).results()),
+            },
+        ]
     }
 }
