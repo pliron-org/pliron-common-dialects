@@ -1271,11 +1271,6 @@ impl RegionBranchOpInterface for IfOp {
         <Self as YieldingRegions<YieldOp>>::verify(self, ctx)
     }
 
-    fn operands_used_in_regions(&self, _ctx: &Context) -> Vec<Use<Value>> {
-        // The condition is read only when control enters the op.
-        vec![]
-    }
-
     fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
         let op = self.get_operation();
         let num_regions = op.deref(ctx).num_regions();
@@ -1286,6 +1281,7 @@ impl RegionBranchOpInterface for IfOp {
                 from: RegionBranchPoint::Parent,
                 to: RegionSuccessor::Region(region),
                 flows: vec![],
+                reads: vec![],
             })
             .collect();
         if !self.has_else_region(ctx) {
@@ -1293,6 +1289,7 @@ impl RegionBranchOpInterface for IfOp {
                 from: RegionBranchPoint::Parent,
                 to: RegionSuccessor::After,
                 flows: vec![],
+                reads: vec![],
             });
         }
         for reg_idx in 0..num_regions {
@@ -1301,6 +1298,7 @@ impl RegionBranchOpInterface for IfOp {
                 from: RegionBranchPoint::Terminator(yield_op),
                 to: RegionSuccessor::After,
                 flows: flows_from(ctx, yield_op, 0, op.deref(ctx).results()),
+                reads: vec![],
             });
         }
         edges
@@ -1328,17 +1326,6 @@ impl RegionBranchOpInterface for ForOp {
         Ok(())
     }
 
-    fn operands_used_in_regions(&self, ctx: &Context) -> Vec<Use<Value>> {
-        // The loop reads its upper bound and step on each iteration.
-        // It reads the lower bound only when control enters it.
-        let start = self.segment_range(ctx, 0).start;
-        let op = self.get_operation().deref(ctx);
-        vec![
-            op.get_operand_as_use(start + 1),
-            op.get_operand_as_use(start + 2),
-        ]
-    }
-
     fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
         let op = self.get_operation();
         let region = op.deref(ctx).get_region(0);
@@ -1346,26 +1333,36 @@ impl RegionBranchOpInterface for ForOp {
         let init_start = self.segment_range(ctx, 1).start;
         let loop_carried = self.get_loop_carried_variables(ctx);
         let results: Vec<_> = op.deref(ctx).results().collect();
+        // The loop reads its upper bound and step again after each iteration.
+        let start = self.segment_range(ctx, 0).start;
+        let iteration_reads = vec![
+            op.deref(ctx).get_operand_as_use(start + 1),
+            op.deref(ctx).get_operand_as_use(start + 2),
+        ];
         vec![
             RegionEdge {
                 from: RegionBranchPoint::Parent,
                 to: RegionSuccessor::Region(region),
                 flows: flows_from(ctx, op, init_start, loop_carried.clone()),
+                reads: vec![],
             },
             RegionEdge {
                 from: RegionBranchPoint::Parent,
                 to: RegionSuccessor::After,
                 flows: flows_from(ctx, op, init_start, results.clone()),
+                reads: vec![],
             },
             RegionEdge {
                 from: RegionBranchPoint::Terminator(yield_op),
                 to: RegionSuccessor::Region(region),
                 flows: flows_from(ctx, yield_op, 0, loop_carried),
+                reads: iteration_reads.clone(),
             },
             RegionEdge {
                 from: RegionBranchPoint::Terminator(yield_op),
                 to: RegionSuccessor::After,
                 flows: flows_from(ctx, yield_op, 0, results),
+                reads: iteration_reads,
             },
         ]
     }
@@ -1378,35 +1375,38 @@ impl RegionBranchOpInterface for NDForOp {
         <Self as YieldingRegions<YieldOp>>::verify(self, ctx)
     }
 
-    fn operands_used_in_regions(&self, ctx: &Context) -> Vec<Use<Value>> {
-        // The loop reads its upper bounds and steps on each iteration.
-        // It reads the lower bounds only when control enters it.
-        let op = self.get_operation().deref(ctx);
-        self.segment_range(ctx, 1)
-            .chain(self.segment_range(ctx, 2))
-            .map(|idx| op.get_operand_as_use(idx))
-            .collect()
-    }
-
     fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
         let op = self.get_operation();
         let region = op.deref(ctx).get_region(0);
         let yield_op = self.get_yield(ctx, 0).get_operation();
-        let edge = |from, to| RegionEdge {
+        // The loop reads its upper bounds and steps again after each iteration.
+        let iteration_reads: Vec<_> = self
+            .segment_range(ctx, 1)
+            .chain(self.segment_range(ctx, 2))
+            .map(|idx| op.deref(ctx).get_operand_as_use(idx))
+            .collect();
+        let edge = |from, to, reads| RegionEdge {
             from,
             to,
             flows: vec![],
+            reads,
         };
         vec![
-            edge(RegionBranchPoint::Parent, RegionSuccessor::Region(region)),
-            edge(RegionBranchPoint::Parent, RegionSuccessor::After),
+            edge(
+                RegionBranchPoint::Parent,
+                RegionSuccessor::Region(region),
+                vec![],
+            ),
+            edge(RegionBranchPoint::Parent, RegionSuccessor::After, vec![]),
             edge(
                 RegionBranchPoint::Terminator(yield_op),
                 RegionSuccessor::Region(region),
+                iteration_reads.clone(),
             ),
             edge(
                 RegionBranchPoint::Terminator(yield_op),
                 RegionSuccessor::After,
+                iteration_reads,
             ),
         ]
     }
@@ -1419,10 +1419,6 @@ impl RegionBranchOpInterface for ExecuteRegionOp {
         <Self as YieldingRegions<YieldOp>>::verify(self, ctx)
     }
 
-    fn operands_used_in_regions(&self, _ctx: &Context) -> Vec<Use<Value>> {
-        vec![]
-    }
-
     fn region_edges(&self, ctx: &Context) -> Vec<RegionEdge> {
         let op = self.get_operation();
         let yield_op = self.get_yield(ctx, 0).get_operation();
@@ -1431,11 +1427,13 @@ impl RegionBranchOpInterface for ExecuteRegionOp {
                 from: RegionBranchPoint::Parent,
                 to: RegionSuccessor::Region(op.deref(ctx).get_region(0)),
                 flows: vec![],
+                reads: vec![],
             },
             RegionEdge {
                 from: RegionBranchPoint::Terminator(yield_op),
                 to: RegionSuccessor::After,
                 flows: flows_from(ctx, yield_op, 0, op.deref(ctx).results()),
+                reads: vec![],
             },
         ]
     }

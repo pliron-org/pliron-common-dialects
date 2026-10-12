@@ -30,7 +30,7 @@ use pliron_common_dialects::cf::{
 };
 
 /// Describe the region edges of every region branch op in `root`, one edge per line,
-/// then its operands used in regions, and then the successor regions of each of its regions.
+/// and then the successor regions of each of its regions.
 fn region_edges_summary(ctx: &Context, root: Ptr<Operation>) -> String {
     let mut ops = Vec::new();
     walkers::uninterruptible::immutable::walk_op(
@@ -53,16 +53,6 @@ fn region_edges_summary(ctx: &Context, root: Ptr<Operation>) -> String {
         for edge in iface.region_edges(ctx) {
             summary += &format!("{}: {}\n", op_dyn.get_opid(), edge.disp(ctx));
         }
-        let used_in_regions = iface
-            .operands_used_in_regions(ctx)
-            .iter()
-            .map(|operand| operand.get_def(ctx).disp(ctx).to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        summary += &format!(
-            "{}: used in regions: [{used_in_regions}]\n",
-            op_dyn.get_opid()
-        );
         for region in op.deref(ctx).regions() {
             let successors = iface
                 .successor_regions(ctx, region)
@@ -183,7 +173,9 @@ fn test_for_op_to_llvm_conversion() {
     "#]].assert_eq(&print_parsed);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -274,11 +266,10 @@ fn test_ndfor_op_to_llvm_conversion() {
 
     // The induction variables must not be receivers.
     expect![[r#"
-        cf.nd_for: parent -> region 0: []
-        cf.nd_for: parent -> after: []
-        cf.nd_for: cf.yield  -> region 0: []
-        cf.nd_for: cf.yield  -> after: []
-        cf.nd_for: used in regions: [c10_v1, c11_v2, c1_v3, c1_v3]
+        cf.nd_for: parent -> region 0: [], reads: []
+        cf.nd_for: parent -> after: [], reads: []
+        cf.nd_for: cf.yield  -> region 0: [], reads: [c10_v1, c11_v2, c1_v3, c1_v3]
+        cf.nd_for: cf.yield  -> after: [], reads: [c10_v1, c11_v2, c1_v3, c1_v3]
         cf.nd_for: region 0 successors: [region 0], repetitive: true
     "#]]
     .assert_eq(&region_edges_summary(ctx, parsed_op));
@@ -363,7 +354,9 @@ fn test_ndfor_op_to_llvm_conversion() {
     "#]].assert_eq(&print_parsed);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -598,15 +591,13 @@ fn test_execute_region_op_to_llvm_conversion() {
     // The init and yield values must flow into the loop-carried variable and the result,
     // and no value into the induction variable.
     expect![[r#"
-        cf.for: parent -> region 0: [init_v3 -> iter_arg_v7]
-        cf.for: parent -> after: [init_v3 -> result_v5]
-        cf.for: cf.yield next_v8 -> region 0: [next_v8 -> iter_arg_v7]
-        cf.for: cf.yield next_v8 -> after: [next_v8 -> result_v5]
-        cf.for: used in regions: [c10_v1, c1_v2]
+        cf.for: parent -> region 0: [init_v3 -> iter_arg_v7], reads: []
+        cf.for: parent -> after: [init_v3 -> result_v5], reads: []
+        cf.for: cf.yield next_v8 -> region 0: [next_v8 -> iter_arg_v7], reads: [c10_v1, c1_v2]
+        cf.for: cf.yield next_v8 -> after: [next_v8 -> result_v5], reads: [c10_v1, c1_v2]
         cf.for: region 0 successors: [region 0], repetitive: true
-        cf.execute_region: parent -> region 0: []
-        cf.execute_region: cf.yield v_v10 -> after: [v_v10 -> next_v8]
-        cf.execute_region: used in regions: []
+        cf.execute_region: parent -> region 0: [], reads: []
+        cf.execute_region: cf.yield v_v10 -> after: [v_v10 -> next_v8], reads: []
         cf.execute_region: region 0 successors: [], repetitive: false
     "#]]
     .assert_eq(&region_edges_summary(ctx, parsed_op));
@@ -653,7 +644,9 @@ fn test_execute_region_op_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -777,7 +770,9 @@ fn test_cond_br_op_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -868,11 +863,10 @@ fn test_if_op_with_else_to_llvm_conversion() {
 
     // Each `yield` must pass its operand to the result.
     expect![[r#"
-        cf.if: parent -> region 0: []
-        cf.if: parent -> region 1: []
-        cf.if: cf.yield true_val_v3 -> after: [true_val_v3 -> result_v5]
-        cf.if: cf.yield false_val_v4 -> after: [false_val_v4 -> result_v5]
-        cf.if: used in regions: []
+        cf.if: parent -> region 0: [], reads: []
+        cf.if: parent -> region 1: [], reads: []
+        cf.if: cf.yield true_val_v3 -> after: [true_val_v3 -> result_v5], reads: []
+        cf.if: cf.yield false_val_v4 -> after: [false_val_v4 -> result_v5], reads: []
         cf.if: region 0 successors: [], repetitive: false
         cf.if: region 1 successors: [], repetitive: false
     "#]]
@@ -909,7 +903,9 @@ fn test_if_op_with_else_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -947,7 +943,9 @@ fn test_if_op_with_else_false_branch_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -1001,10 +999,9 @@ fn test_if_op_without_else_to_llvm_conversion() {
 
     // With no `else` region, control must also continue directly after the op.
     expect![[r#"
-        cf.if: parent -> region 0: []
-        cf.if: parent -> after: []
-        cf.if: cf.yield  -> after: []
-        cf.if: used in regions: []
+        cf.if: parent -> region 0: [], reads: []
+        cf.if: parent -> after: [], reads: []
+        cf.if: cf.yield  -> after: [], reads: []
         cf.if: region 0 successors: [], repetitive: false
     "#]]
     .assert_eq(&region_edges_summary(ctx, parsed_op));
@@ -1037,7 +1034,9 @@ fn test_if_op_without_else_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
@@ -1177,7 +1176,9 @@ fn test_if_op_execute_region_in_then_branch_to_llvm_conversion() {
     verify_op(&module_op, ctx).expect_ok(ctx);
 
     let llvm_ctx = LLVMContext::default();
-    let llvm_ir = pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op).expect_ok(ctx);
+    let llvm_ir =
+        pliron_llvm::to_llvm_ir::convert_module(ctx, &llvm_ctx, module_op, Default::default())
+            .expect_ok(ctx);
     llvm_ir
         .verify()
         .inspect_err(|e| println!("LLVM-IR verification failed: {}", e))
