@@ -83,15 +83,7 @@ pub struct YieldOp;
 impl YieldOp {
     /// Creates a new `YieldOp` with the specified operands.
     pub fn new(ctx: &mut Context, results: Vec<Value>) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            results,
-            vec![],
-            0,
-        );
-        YieldOp { op }
+        Operation::new_op::<Self>(ctx, vec![], results, vec![], 0)
     }
 }
 
@@ -148,15 +140,7 @@ pub struct BrOp;
 impl BrOp {
     /// Creates a new `BrOp` branching to `dest`, forwarding `dest_opds` as its block arguments.
     pub fn new(ctx: &mut Context, dest: Ptr<BasicBlock>, dest_opds: Vec<Value>) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            dest_opds,
-            vec![dest],
-            0,
-        );
-        BrOp { op }
+        Operation::new_op::<Self>(ctx, vec![], dest_opds, vec![dest], 0)
     }
 }
 
@@ -225,16 +209,7 @@ impl CondBrOp {
         let (operands, segments) =
             Self::compute_segment_sizes(vec![vec![condition], true_dest_opds, false_dest_opds]);
 
-        let op = CondBrOp {
-            op: Operation::new(
-                ctx,
-                Self::get_concrete_op_info(),
-                vec![],
-                operands,
-                vec![true_dest, false_dest],
-                0,
-            ),
-        };
+        let op = Operation::new_op::<Self>(ctx, vec![], operands, vec![true_dest, false_dest], 0);
         op.set_operand_segment_sizes(ctx, segments);
         op
     }
@@ -302,7 +277,7 @@ impl Printable for CondBrOp {
     fn fmt(
         &self,
         ctx: &Context,
-        _state: &pliron::printable::State,
+        state: &pliron::printable::State,
         f: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
         let op = self.get_operation().deref(ctx);
@@ -313,11 +288,11 @@ impl Printable for CondBrOp {
             f,
             "{} if {} ^{}({}) else ^{}({})",
             Self::get_opid_static(),
-            condition.disp(ctx),
+            condition.print(ctx, state),
             op.get_successor(0).deref(ctx).unique_name(ctx),
-            iter_with_sep(true_dest_opds.iter(), ListSeparator::CharSpace(',')).disp(ctx),
+            iter_with_sep(true_dest_opds.iter(), ListSeparator::CharSpace(',')).print(ctx, state),
             op.get_successor(1).deref(ctx).unique_name(ctx),
-            iter_with_sep(false_dest_opds.iter(), ListSeparator::CharSpace(',')).disp(ctx),
+            iter_with_sep(false_dest_opds.iter(), ListSeparator::CharSpace(',')).print(ctx, state),
         )
     }
 }
@@ -426,15 +401,7 @@ impl IfOp {
             "IfOp with results must have an else branch"
         );
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            result_types,
-            vec![condition],
-            vec![],
-            0,
-        );
-        let op = IfOp { op };
+        let op = Operation::new_op::<Self>(ctx, result_types, vec![condition], vec![], 0);
 
         Self::build_branch_region(ctx, op.get_operation(), then_builder, then_builder_state);
         if let Some((else_builder, else_builder_state)) = else_builder {
@@ -514,15 +481,15 @@ impl Printable for IfOp {
         let op = self.get_operation().deref(ctx);
         if op.get_num_results() > 0 {
             let results = iter_with_sep(op.results(), ListSeparator::CharSpace(','));
-            write!(f, "{} = ", results.disp(ctx))?;
+            write!(f, "{} = ", results.print(ctx, state))?;
         }
         let result_types = op.results().map(|r| r.get_type(ctx)).collect::<Vec<_>>();
         write!(
             f,
             "{} {} -> ({}) {}",
             Self::get_opid_static(),
-            self.get_operand_condition(ctx).disp(ctx),
-            list_with_sep(&result_types, ListSeparator::CharSpace(',')).disp(ctx),
+            self.get_operand_condition(ctx).print(ctx, state),
+            list_with_sep(&result_types, ListSeparator::CharSpace(',')).print(ctx, state),
             self.get_then_region(ctx).print(ctx, state)
         )?;
         if let Some(else_region) = self.get_else_region(ctx) {
@@ -547,16 +514,14 @@ impl Parsable for IfOp {
             .parse_stream(state_stream)
             .into_result()?;
 
-        let op = Operation::new(
+        let opop = Operation::new_op::<Self>(
             state_stream.state.ctx,
-            Self::get_concrete_op_info(),
             result_types,
             vec![condition],
             vec![],
             0,
         );
-
-        let opop = IfOp { op };
+        let op = opop.get_operation();
 
         spaces()
             .with(Region::parser(op))
@@ -687,16 +652,7 @@ impl ForOp {
             iter_args_init.to_vec(),
         ]);
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            result_types,
-            operands,
-            vec![],
-            1,
-        );
-
-        let op = ForOp { op };
+        let op = Operation::new_op::<Self>(ctx, result_types, operands, vec![], 1);
         op.set_operand_segment_sizes(ctx, segments);
 
         // Set up the region, its entry block and arguments.
@@ -777,17 +733,17 @@ impl Printable for ForOp {
         let op = self.get_operation().deref(ctx);
         if op.get_num_results() > 0 {
             let results = iter_with_sep(op.results(), ListSeparator::CharSpace(','));
-            write!(f, "{} = ", results.disp(ctx))?;
+            write!(f, "{} = ", results.print(ctx, state))?;
         }
         let iter_args_init = self.get_iter_args_init(ctx);
         writeln!(
             f,
             "{} {} to {} step {} ({}) {}",
             Self::get_opid_static(),
-            self.get_lower_bound(ctx).disp(ctx),
-            self.get_upper_bound(ctx).disp(ctx),
-            self.get_step(ctx).disp(ctx),
-            list_with_sep(&iter_args_init, ListSeparator::CharSpace(',')).disp(ctx),
+            self.get_lower_bound(ctx).print(ctx, state),
+            self.get_upper_bound(ctx).print(ctx, state),
+            self.get_step(ctx).print(ctx, state),
+            list_with_sep(&iter_args_init, ListSeparator::CharSpace(',')).print(ctx, state),
             self.get_region(ctx).print(ctx, state)
         )
     }
@@ -820,16 +776,9 @@ impl Parsable for ForOp {
         let (operands, segments) =
             Self::compute_segment_sizes(vec![vec![lb, ub, step], iter_args_init]);
 
-        let op = Operation::new(
-            state_stream.state.ctx,
-            Self::get_concrete_op_info(),
-            result_types,
-            operands,
-            vec![],
-            0,
-        );
-
-        let opop = ForOp { op };
+        let opop =
+            Operation::new_op::<Self>(state_stream.state.ctx, result_types, operands, vec![], 0);
+        let op = opop.get_operation();
         opop.set_operand_segment_sizes(state_stream.state.ctx, segments);
 
         spaces()
@@ -927,9 +876,9 @@ impl Printable for NDForOp {
             f,
             "{} [{}] to [{}] step [{}] {}",
             Self::get_opid_static(),
-            list_with_sep(&lower_bounds, ListSeparator::CharSpace(',')).disp(ctx),
-            list_with_sep(&upper_bounds, ListSeparator::CharSpace(',')).disp(ctx),
-            list_with_sep(&steps, ListSeparator::CharSpace(',')).disp(ctx),
+            list_with_sep(&lower_bounds, ListSeparator::CharSpace(',')).print(ctx, state),
+            list_with_sep(&upper_bounds, ListSeparator::CharSpace(',')).print(ctx, state),
+            list_with_sep(&steps, ListSeparator::CharSpace(',')).print(ctx, state),
             self.get_region(ctx).print(ctx, state)
         )
     }
@@ -963,16 +912,8 @@ impl Parsable for NDForOp {
         let ((lbs, ubs, steps), _) = (lbs, ubs, steps).parse_stream(state_stream).into_result()?;
         let (operands, segments) = Self::compute_segment_sizes(vec![lbs, ubs, steps]);
 
-        let op = Operation::new(
-            state_stream.state.ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            operands,
-            vec![],
-            0,
-        );
-
-        let opop = NDForOp { op };
+        let opop = Operation::new_op::<Self>(state_stream.state.ctx, vec![], operands, vec![], 0);
+        let op = opop.get_operation();
 
         opop.set_operand_segment_sizes(state_stream.state.ctx, segments);
 
@@ -1071,16 +1012,7 @@ impl NDForOp {
         let (operands, segments) =
             Self::compute_segment_sizes(vec![lower_bounds, upper_bounds, steps]);
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![],
-            operands,
-            vec![],
-            1,
-        );
-
-        let op = NDForOp { op };
+        let op = Operation::new_op::<Self>(ctx, vec![], operands, vec![], 1);
         op.set_operand_segment_sizes(ctx, segments);
 
         // Set up the region and its entry block.
@@ -1142,16 +1074,7 @@ impl ExecuteRegionOp {
         body_builder: ExecuteRegionOpBodyBuilderFn<State>,
         body_builder_state: State,
     ) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            result_types,
-            vec![],
-            vec![],
-            1,
-        );
-
-        let op = ExecuteRegionOp { op };
+        let op = Operation::new_op::<Self>(ctx, result_types, vec![], vec![], 1);
 
         // Set up the region and its entry block.
         let region = op.get_region(ctx);
@@ -1183,14 +1106,14 @@ impl Printable for ExecuteRegionOp {
         let op = self.get_operation().deref(ctx);
         if op.get_num_results() > 0 {
             let results = iter_with_sep(op.results(), ListSeparator::CharSpace(','));
-            write!(f, "{} = ", results.disp(ctx))?;
+            write!(f, "{} = ", results.print(ctx, state))?;
         }
         let result_types = op.results().map(|r| r.get_type(ctx)).collect::<Vec<_>>();
         writeln!(
             f,
             "{} -> ({}) {}",
             Self::get_opid_static(),
-            list_with_sep(&result_types, ListSeparator::CharSpace(',')).disp(ctx),
+            list_with_sep(&result_types, ListSeparator::CharSpace(',')).print(ctx, state),
             self.get_region(ctx).print(ctx, state)
         )
     }
@@ -1209,16 +1132,9 @@ impl Parsable for ExecuteRegionOp {
             .parse_stream(state_stream)
             .into_result()?;
 
-        let op = Operation::new(
-            state_stream.state.ctx,
-            Self::get_concrete_op_info(),
-            result_types,
-            vec![],
-            vec![],
-            0,
-        );
-
-        let opop = ExecuteRegionOp { op };
+        let opop =
+            Operation::new_op::<Self>(state_stream.state.ctx, result_types, vec![], vec![], 0);
+        let op = opop.get_operation();
 
         spaces()
             .with(Region::parser(op))

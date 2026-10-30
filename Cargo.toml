@@ -16,3 +16,8 @@ expect-test = "1"
 
 [dev-dependencies]
 env_logger = "0"
+
+[workspace.metadata.dylint]
+libraries = [
+    { git = "https://github.com/pliron-org/pliron.git", branch = "master", pattern = "lints/pliron_lints" },
+]

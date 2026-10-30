@@ -44,16 +44,8 @@ impl IndexConstantOp {
     pub fn new(ctx: &mut Context, constant_index: usize) -> Self {
         let constant_index_attr = ConstantIndexAttr { constant_index };
 
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![IndexType::get(ctx).into()],
-            vec![],
-            vec![],
-            0,
-        );
-
-        let op = Self { op };
+        let result_ty = IndexType::get(ctx).into();
+        let op = Operation::new_op::<Self>(ctx, vec![result_ty], vec![], vec![], 0);
         op.set_attr_constant_index(ctx, constant_index_attr);
         op
     }
@@ -145,15 +137,8 @@ pub struct IndexAddOp;
 impl IndexAddOp {
     /// Create a new IndexAddOp that computes `lhs + rhs`.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![IndexType::get(ctx).into()],
-            vec![lhs, rhs],
-            vec![],
-            0,
-        );
-        Self { op }
+        let result_ty = IndexType::get(ctx).into();
+        Operation::new_op::<Self>(ctx, vec![result_ty], vec![lhs, rhs], vec![], 0)
     }
 }
 
@@ -174,14 +159,7 @@ pub struct IndexMulOp;
 impl IndexMulOp {
     /// Create a new IndexMulOp that computes `lhs * rhs`.
     pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
-        let op = Operation::new(
-            ctx,
-            Self::get_concrete_op_info(),
-            vec![IndexType::get(ctx).into()],
-            vec![lhs, rhs],
-            vec![],
-            0,
-        );
-        Self { op }
+        let result_ty = IndexType::get(ctx).into();
+        Operation::new_op::<Self>(ctx, vec![result_ty], vec![lhs, rhs], vec![], 0)
     }
 }
