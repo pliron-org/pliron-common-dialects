@@ -22,7 +22,6 @@ use pliron::{
         rewriter::{Rewriter, ScopedRewriter},
     },
     linked_list::{ContainsLinkedList, LinkedList},
-    location::Located,
     op::{Op, op_cast, op_impls},
     operation::Operation,
     region::Region,
@@ -115,7 +114,7 @@ impl ToLLVMDialect for ForOp {
         let for_body_entry = self.get_entry(ctx, 0);
 
         let self_op = self.get_operation();
-        let self_op_loc = self_op.deref(ctx).loc();
+        let self_op_loc = self_op.deref(ctx).loc().clone();
 
         let pre_header = self_op
             .deref(ctx)
