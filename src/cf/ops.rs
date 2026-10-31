@@ -6,8 +6,10 @@
 use std::ops::Range;
 
 use pliron::{
+    attribute::{AttrObj, Attribute},
     basic_block::BasicBlock,
     builtin::{
+        attributes::IntegerAttr,
         given_names::set_block_arg_name,
         op_interfaces::{
             BranchOpInterface, IsTerminatorInterface, NResultsInterface, NSuccsInterface,
@@ -24,8 +26,10 @@ use pliron::{
     identifier::Identifier,
     input_err,
     irbuild::{
+        IRStatus,
         inserter::{IRInserter, Inserter, OpInsertionPoint},
         listener::DummyListener,
+        rewriter::Rewriter,
     },
     irfmt::{
         parsers::{
@@ -34,10 +38,11 @@ use pliron::{
         },
         printers::{iter_with_sep, list_with_sep},
     },
-    linked_list::ContainsLinkedList,
+    linked_list::{ContainsLinkedList, LinkedList},
     location::Location,
     op::{Op, OpObj},
     operation::Operation,
+    opts::constants::{BranchOpFoldInterface, RegionBranchOpFoldInterface},
     parsable::{IntoParseResult, Parsable},
     printable::{ListSeparator, Printable},
     region::Region,
@@ -53,9 +58,11 @@ use pliron::{
     },
 };
 
+use pliron_llvm::attributes::{PoisonAttr, UndefAttr};
+
 use crate::{
     cf::op_interfaces::{YieldingOp, YieldingRegions},
-    index::types::IndexType,
+    index::{attributes::known_constant_index, types::IndexType},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -566,6 +573,11 @@ impl Verify for IfOp {
 /// The loop body is defined in a region that takes the loop induction variable
 /// and loop-carried variables as arguments and yields updated loop-carried variables.
 ///
+/// The trip count `n` is `max(0, ceil((upper_bound - lower_bound) / step))`,
+/// in arbitrary precision arithmetic. For a well-defined `ForOp`:
+/// - The step must be strictly positive.
+/// - `lower_bound + n * step` must be representable in the index type.
+///
 /// ## Operand(s)
 /// | operand | description |
 /// |-----|-------|
@@ -823,6 +835,12 @@ pub type NDForOpBodyBuilderFn<State> = fn(
 /// An N-Dimensional version of [ForOp],
 /// but without the loop carried variables and related operands/results.
 ///
+/// For each dimension `i`, the trip count `n[i]` is
+/// `max(0, ceil((upper_bounds[i] - lower_bounds[i]) / steps[i]))`,
+/// in arbitrary precision arithmetic. For a well-defined `NDForOp`:
+/// - Each step must be strictly positive.
+/// - `lower_bounds[i] + n[i] * steps[i]` must be representable in the index type.
+///
 /// The body of this op is a region with N entry-block arguments
 /// corresponding to the N induction variables. The region of this op
 /// takes the induction variables as arguments, and yields zero results.
@@ -834,7 +852,7 @@ pub type NDForOpBodyBuilderFn<State> = fn(
 /// | `upper_bounds` | The ending indices of the loop (exclusive). Must be of index type. |
 /// | `steps` | The step sizes for each iteration. Must be of index type. |
 ///
-//// ## Region(s)
+/// ## Region(s)
 ///   - A single region, with a single block, containing the loop body.
 ///   The block takes as arguments the loop induction variables, and must
 ///   end with a [YieldOp] with no operands.
@@ -1352,5 +1370,310 @@ impl RegionBranchOpInterface for ExecuteRegionOp {
                 reads: vec![],
             },
         ]
+    }
+}
+
+impl_no_self_side_effects!(
+    YieldOp,
+    BrOp,
+    CondBrOp,
+    IfOp,
+    ExecuteRegionOp,
+    ForOp,
+    NDForOp
+);
+
+/// For a loop over `[lb, ub)`, returns
+/// - `Some(true)` if the loop has zero iterations
+/// - `Some(false)` if the loop has one or more iterations
+/// - `None` if `lb` or `ub` is not known
+fn is_zero_trip_bounds(lb: Option<u64>, ub: Option<u64>) -> Option<bool> {
+    Some(lb? >= ub?)
+}
+
+/// Possible successors of a loop's entry, given whether it `is_zero_trip`.
+fn loop_entry_successors(region: Ptr<Region>, is_zero_trip: Option<bool>) -> Vec<RegionSuccessor> {
+    match is_zero_trip {
+        Some(true) => vec![RegionSuccessor::After],
+        Some(false) => vec![RegionSuccessor::Region(region)],
+        None => vec![RegionSuccessor::Region(region), RegionSuccessor::After],
+    }
+}
+
+/// The boolean value of the first operand, if it is a known constant.
+fn known_condition(operand_attrs: &[Option<AttrObj>]) -> Option<bool> {
+    let condition = operand_attrs
+        .first()?
+        .as_ref()?
+        .downcast_ref::<IntegerAttr>()?;
+    Some(!condition.value().is_zero())
+}
+
+#[op_interface_impl]
+impl RegionBranchOpFoldInterface for IfOp {
+    fn check_fold(
+        &self,
+        ctx: &Context,
+        point: RegionBranchPoint,
+        operand_attrs: &[Option<AttrObj>],
+        _terminator_operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<RegionSuccessor> {
+        if let RegionBranchPoint::Terminator(_) = point {
+            return vec![RegionSuccessor::After];
+        }
+        match known_condition(operand_attrs) {
+            Some(true) => vec![RegionSuccessor::Region(self.get_then_region(ctx))],
+            Some(false) => vec![
+                self.get_else_region(ctx)
+                    .map_or(RegionSuccessor::After, RegionSuccessor::Region),
+            ],
+            None => self
+                .edges_from(ctx, RegionBranchPoint::Parent)
+                .into_iter()
+                .map(|edge| edge.to)
+                .collect(),
+        }
+    }
+
+    // Replace this op with the operations of the region that the
+    // condition selects, or erase this op if no region is selected.
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        let Some(condition) = known_condition(operand_attrs) else {
+            return IRStatus::Unchanged;
+        };
+        let op = self.get_operation();
+        let reg_idx = if condition { 0 } else { 1 };
+        if reg_idx >= op.deref(ctx).num_regions() {
+            rewriter.erase_operation(ctx, op);
+            return IRStatus::Changed;
+        }
+
+        let yield_op = self.get_yield(ctx, reg_idx).get_operation();
+        let yielded: Vec<Value> = yield_op.deref(ctx).operands().collect();
+        let mut cur = self.get_entry(ctx, reg_idx).deref(ctx).get_head();
+        while let Some(inner) = cur
+            && inner != yield_op
+        {
+            cur = inner.deref(ctx).get_next();
+            rewriter.move_operation(ctx, inner, OpInsertionPoint::BeforeOperation(op));
+        }
+        rewriter.replace_operation_with_values(ctx, op, yielded);
+        IRStatus::Changed
+    }
+}
+
+impl ForOp {
+    /// Given the constant values of the operands in `operand_attrs`, returns
+    /// - `Some(true)` if the loop has zero iterations
+    /// - `Some(false)` if the loop has one or more iterations
+    /// - `None` if this is not known
+    fn is_zero_trip(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Option<bool> {
+        let start = self.segment_range(ctx, 0).start;
+        is_zero_trip_bounds(
+            known_constant_index(&operand_attrs[start]),
+            known_constant_index(&operand_attrs[start + 1]),
+        )
+    }
+}
+
+#[op_interface_impl]
+impl RegionBranchOpFoldInterface for ForOp {
+    fn check_fold(
+        &self,
+        ctx: &Context,
+        point: RegionBranchPoint,
+        operand_attrs: &[Option<AttrObj>],
+        _terminator_operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<RegionSuccessor> {
+        let region = self.get_region(ctx);
+        match point {
+            RegionBranchPoint::Parent => {
+                loop_entry_successors(region, self.is_zero_trip(ctx, operand_attrs))
+            }
+            RegionBranchPoint::Terminator(_) => {
+                vec![RegionSuccessor::Region(region), RegionSuccessor::After]
+            }
+        }
+    }
+
+    // Replace a loop that runs zero iterations with its initial loop-carried values.
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        if self.is_zero_trip(ctx, operand_attrs) != Some(true) {
+            return IRStatus::Unchanged;
+        }
+        let iter_args_init = self.get_iter_args_init(ctx);
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), iter_args_init);
+        IRStatus::Changed
+    }
+}
+
+impl NDForOp {
+    /// Given the constant values of the operands in `operand_attrs`, returns
+    /// - `Some(true)` if the loop has zero iterations
+    /// - `Some(false)` if the loop has one or more iterations
+    /// - `None` if this is not known
+    fn is_zero_trip(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Option<bool> {
+        let dims_zero_trip: Vec<_> = self
+            .segment_range(ctx, 0)
+            .zip(self.segment_range(ctx, 1))
+            .map(|(lb, ub)| {
+                is_zero_trip_bounds(
+                    known_constant_index(&operand_attrs[lb]),
+                    known_constant_index(&operand_attrs[ub]),
+                )
+            })
+            .collect();
+        if dims_zero_trip.contains(&Some(true)) {
+            Some(true)
+        } else if dims_zero_trip
+            .iter()
+            .all(|zero_trip| *zero_trip == Some(false))
+        {
+            Some(false)
+        } else {
+            None
+        }
+    }
+}
+
+#[op_interface_impl]
+impl RegionBranchOpFoldInterface for NDForOp {
+    fn check_fold(
+        &self,
+        ctx: &Context,
+        point: RegionBranchPoint,
+        operand_attrs: &[Option<AttrObj>],
+        _terminator_operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<RegionSuccessor> {
+        let region = self.get_region(ctx);
+        match point {
+            RegionBranchPoint::Parent => {
+                loop_entry_successors(region, self.is_zero_trip(ctx, operand_attrs))
+            }
+            RegionBranchPoint::Terminator(_) => {
+                vec![RegionSuccessor::Region(region), RegionSuccessor::After]
+            }
+        }
+    }
+
+    // Erase a loop that runs zero iterations.
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        if self.is_zero_trip(ctx, operand_attrs) != Some(true) {
+            return IRStatus::Unchanged;
+        }
+        rewriter.erase_operation(ctx, self.get_operation());
+        IRStatus::Changed
+    }
+}
+
+#[op_interface_impl]
+impl RegionBranchOpFoldInterface for ExecuteRegionOp {
+    fn check_fold(
+        &self,
+        ctx: &Context,
+        point: RegionBranchPoint,
+        _operand_attrs: &[Option<AttrObj>],
+        _terminator_operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<RegionSuccessor> {
+        self.edges_from(ctx, point)
+            .into_iter()
+            .map(|edge| edge.to)
+            .collect()
+    }
+
+    fn fold_in_place(
+        &self,
+        _ctx: &mut Context,
+        _operand_attrs: &[Option<AttrObj>],
+        _rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        IRStatus::Unchanged
+    }
+}
+
+#[op_interface_impl]
+impl BranchOpFoldInterface for BrOp {
+    fn check_fold(
+        &self,
+        ctx: &Context,
+        _operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<Ptr<BasicBlock>> {
+        self.get_operation().deref(ctx).successors().collect()
+    }
+
+    fn fold_in_place(
+        &self,
+        _ctx: &mut Context,
+        _operand_attrs: &[Option<AttrObj>],
+        _rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        IRStatus::Unchanged
+    }
+}
+
+/// Is `attr` an `undef` or a `poison` value?
+fn is_undef_or_poison_attr(attr: &dyn Attribute) -> bool {
+    attr.downcast_ref::<UndefAttr>().is_some() || attr.downcast_ref::<PoisonAttr>().is_some()
+}
+
+impl CondBrOp {
+    /// Get the indices of possible successors, given `operand_attrs`.
+    ///
+    /// A branch on an `undef` or `poison` condition is undefined and leads to no successor.
+    fn possible_successor_indices(operand_attrs: &[Option<AttrObj>]) -> Vec<usize> {
+        let condition = operand_attrs.first().and_then(|cond| cond.as_ref());
+        if condition.is_some_and(|cond| is_undef_or_poison_attr(&**cond)) {
+            return vec![];
+        }
+        match known_condition(operand_attrs) {
+            Some(true) => vec![0],
+            Some(false) => vec![1],
+            None => vec![0, 1],
+        }
+    }
+}
+
+#[op_interface_impl]
+impl BranchOpFoldInterface for CondBrOp {
+    fn check_fold(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Vec<Ptr<BasicBlock>> {
+        let op = self.get_operation().deref(ctx);
+        Self::possible_successor_indices(operand_attrs)
+            .into_iter()
+            .map(|succ_idx| op.get_successor(succ_idx))
+            .collect()
+    }
+
+    // If we can determine a single successor, replace this op with a [BrOp] to it.
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        let [succ_idx] = Self::possible_successor_indices(operand_attrs)[..] else {
+            return IRStatus::Unchanged;
+        };
+        let op = self.get_operation();
+        let dest = op.deref(ctx).get_successor(succ_idx);
+        let dest_opds = self.successor_operands(ctx, succ_idx);
+        let br_op = BrOp::new(ctx, dest, dest_opds).get_operation();
+        rewriter.insert_operation(ctx, br_op);
+        rewriter.replace_operation(ctx, op, br_op);
+        IRStatus::Changed
     }
 }

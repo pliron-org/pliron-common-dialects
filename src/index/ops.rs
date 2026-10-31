@@ -3,26 +3,36 @@
 
 //! Index operations
 
+use std::num::NonZero;
+
 use pliron::{
+    attribute::AttrObj,
     builtin::{
+        attributes::IntegerAttr,
         op_interfaces::{
             AllOperandsOfType, AllResultsOfType, NOpdsInterface, NResultsInterface,
             OneOpdInterface, OneResultInterface,
         },
-        types::IntegerType,
+        types::{IntegerType, Signedness},
     },
     common_traits::Verify,
     context::Context,
-    derive::pliron_op,
+    derive::{op_interface_impl, pliron_op},
+    irbuild::{IRStatus, rewriter::Rewriter},
     op::Op,
     operation::Operation,
+    opts::constants::ConstFoldInterface,
     result::Result,
+    utils::apint::APInt,
     value::Value,
     verify_err,
 };
 use pliron_llvm::op_interfaces::CastOpInterface;
 
-use crate::index::{attributes::ConstantIndexAttr, types::IndexType};
+use crate::index::{
+    attributes::{ConstantIndexAttr, known_constant_index},
+    types::IndexType,
+};
 
 /// Constant operation for IndexType.
 #[pliron_op(
@@ -163,3 +173,147 @@ impl IndexMulOp {
         Operation::new_op::<Self>(ctx, vec![result_ty], vec![lhs, rhs], vec![], 0)
     }
 }
+
+/// Bit width (post lowering to LLVM integer) of [IndexType] values.
+const INDEX_BITWIDTH: NonZero<usize> = NonZero::new(64).unwrap();
+
+/// Fold a binary [IndexType] op on constant operands with `combine`.
+fn check_fold_index_bin_op(
+    operand_attrs: &[Option<AttrObj>],
+    combine: fn(u64, u64) -> u64,
+) -> Vec<Option<AttrObj>> {
+    let [lhs, rhs] = operand_attrs else {
+        panic!("A binary index op must have two operands");
+    };
+    let folded = known_constant_index(lhs)
+        .zip(known_constant_index(rhs))
+        .and_then(|(lhs, rhs)| ConstantIndexAttr::from_u64(combine(lhs, rhs)))
+        .map(|attr| Box::new(attr) as AttrObj);
+    vec![folded]
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for IndexConstantOp {
+    fn check_fold(
+        &self,
+        ctx: &Context,
+        _operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<Option<AttrObj>> {
+        let attr = self
+            .get_attr_constant_index(ctx)
+            .expect("Missing value attribute")
+            .clone();
+        vec![Some(Box::new(attr) as AttrObj)]
+    }
+
+    fn fold_in_place(
+        &self,
+        _ctx: &mut Context,
+        _operand_attrs: &[Option<AttrObj>],
+        _rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        IRStatus::Unchanged
+    }
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for IndexToIntegerOp {
+    fn check_fold(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Vec<Option<AttrObj>> {
+        let [operand] = operand_attrs else {
+            panic!("IndexToIntegerOp must have one operand");
+        };
+        let folded = known_constant_index(operand).map(|value| {
+            let int_ty = IntegerType::get(ctx, INDEX_BITWIDTH.get() as u32, Signedness::Signless);
+            Box::new(IntegerAttr::new(
+                int_ty,
+                APInt::from_u64(value, INDEX_BITWIDTH),
+            )) as AttrObj
+        });
+        vec![folded]
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for IntegerToIndexOp {
+    fn check_fold(
+        &self,
+        _ctx: &Context,
+        operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<Option<AttrObj>> {
+        let [operand] = operand_attrs else {
+            panic!("IntegerToIndexOp must have one operand");
+        };
+        let folded = operand
+            .as_ref()
+            .and_then(|attr| attr.downcast_ref::<IntegerAttr>())
+            .and_then(|int_attr| ConstantIndexAttr::from_u64(int_attr.value().to_u64()))
+            .map(|attr| Box::new(attr) as AttrObj);
+        vec![folded]
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for IndexAddOp {
+    fn check_fold(
+        &self,
+        _ctx: &Context,
+        operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<Option<AttrObj>> {
+        check_fold_index_bin_op(operand_attrs, u64::wrapping_add)
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for IndexMulOp {
+    fn check_fold(
+        &self,
+        _ctx: &Context,
+        operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<Option<AttrObj>> {
+        check_fold_index_bin_op(operand_attrs, u64::wrapping_mul)
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+impl_no_self_side_effects!(
+    IndexConstantOp,
+    IndexToIntegerOp,
+    IntegerToIndexOp,
+    IndexAddOp,
+    IndexMulOp,
+);
