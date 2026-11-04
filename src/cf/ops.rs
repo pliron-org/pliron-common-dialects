@@ -13,9 +13,9 @@ use pliron::{
         given_names::set_block_arg_name,
         op_interfaces::{
             BranchOpInterface, IsTerminatorInterface, NResultsInterface, NSuccsInterface,
-            OneRegionInterface, OneSuccInterface, OperandSegmentInterface, RegionBranchOpInterface,
-            RegionBranchPoint, RegionEdge, RegionSuccessor, SegmentNOfType,
-            SingleBlockRegionInterface,
+            OneOpdInterface, OneRegionInterface, OneSuccInterface, OperandSegmentInterface,
+            RegionBranchOpInterface, RegionBranchPoint, RegionEdge, RegionSuccessor,
+            SegmentNOfType, SingleBlockRegionInterface,
         },
         types::{IntegerType, Signedness},
     },
@@ -42,7 +42,10 @@ use pliron::{
     location::Location,
     op::{Op, OpObj},
     operation::Operation,
-    opts::constants::{BranchOpFoldInterface, RegionBranchOpFoldInterface},
+    opts::{
+        constants::{BranchOpFoldInterface, RegionBranchOpFoldInterface},
+        mem2reg::PromotableRegionBranchOpInterface,
+    },
     parsable::{IntoParseResult, Parsable},
     printable::{ListSeparator, Printable},
     region::Region,
@@ -373,7 +376,7 @@ impl Parsable for CondBrOp {
 #[pliron_op(
     name = "cf.if",
     operands = (condition,),
-    interfaces = [YieldingRegions<YieldOp>, SingleBlockRegionInterface],
+    interfaces = [OneOpdInterface, YieldingRegions<YieldOp>, SingleBlockRegionInterface],
 )]
 pub struct IfOp;
 
@@ -612,7 +615,9 @@ pub struct ForOp;
 #[op_interface_impl]
 impl OperandSegmentInterface for ForOp {
     fn expected_num_segments(&self, _ctx: &Context) -> Option<usize> {
-        // The lower bound, upper bound and step, and the initial loop-carried values.
+        // `ForOp` has two operand segments:
+        // - The lower bound, upper bound and step.
+        // - The initial loop-carried values.
         Some(2)
     }
 }
@@ -1370,6 +1375,150 @@ impl RegionBranchOpInterface for ExecuteRegionOp {
                 reads: vec![],
             },
         ]
+    }
+}
+
+/// Add a result of type `ty` to `op`, and get it.
+fn push_result(ctx: &Context, op: Ptr<Operation>, ty: TypeHandle) -> Value {
+    let idx = Operation::push_result(op, ctx, ty);
+    op.deref(ctx).get_result(idx)
+}
+
+#[op_interface_impl]
+impl PromotableRegionBranchOpInterface for IfOp {
+    fn permits_store_promotion(&self, ctx: &Context) -> bool {
+        // Without an `else`, the `Parent -> After` edge needs an additional
+        // operand on `self`, which breaks `OneOpdInterface`.
+        self.has_else_region(ctx)
+    }
+
+    fn add_receivers(
+        &self,
+        ctx: &mut Context,
+        successors: &[RegionSuccessor],
+        ty: TypeHandle,
+    ) -> Vec<(RegionSuccessor, Value)> {
+        assert_eq!(successors, [RegionSuccessor::After]);
+        vec![(
+            RegionSuccessor::After,
+            push_result(ctx, self.get_operation(), ty),
+        )]
+    }
+
+    fn add_carried_operand(
+        &self,
+        ctx: &mut Context,
+        source: RegionBranchPoint,
+        _receivers: &[(RegionSuccessor, Value)],
+        operand: Value,
+    ) {
+        let RegionBranchPoint::Terminator(yield_op) = source else {
+            panic!("Only the yields of an `if` can carry values into its results");
+        };
+        Operation::push_operand(yield_op, ctx, operand);
+    }
+}
+
+#[op_interface_impl]
+impl PromotableRegionBranchOpInterface for ForOp {
+    fn permits_store_promotion(&self, _ctx: &Context) -> bool {
+        true
+    }
+
+    fn add_receivers(
+        &self,
+        ctx: &mut Context,
+        _successors: &[RegionSuccessor],
+        ty: TypeHandle,
+    ) -> Vec<(RegionSuccessor, Value)> {
+        // Init and yielded values flow into both the loop-carried variables and the results.
+        let entry = self.get_entry(ctx, 0);
+        let arg_idx = BasicBlock::push_argument(entry, ctx, ty);
+        let loop_carried = entry.deref(ctx).get_argument(arg_idx);
+        vec![
+            (RegionSuccessor::Region(self.get_region(ctx)), loop_carried),
+            (
+                RegionSuccessor::After,
+                push_result(ctx, self.get_operation(), ty),
+            ),
+        ]
+    }
+
+    fn add_carried_operand(
+        &self,
+        ctx: &mut Context,
+        source: RegionBranchPoint,
+        _receivers: &[(RegionSuccessor, Value)],
+        operand: Value,
+    ) {
+        match source {
+            RegionBranchPoint::Parent => {
+                self.push_to_segment(ctx, 1, operand);
+            }
+            RegionBranchPoint::Terminator(yield_op) => {
+                Operation::push_operand(yield_op, ctx, operand);
+            }
+        }
+    }
+}
+
+#[op_interface_impl]
+impl PromotableRegionBranchOpInterface for NDForOp {
+    fn permits_store_promotion(&self, _ctx: &Context) -> bool {
+        // No loop-carried variables or results to receive a stored value.
+        false
+    }
+
+    fn add_receivers(
+        &self,
+        _ctx: &mut Context,
+        _successors: &[RegionSuccessor],
+        _ty: TypeHandle,
+    ) -> Vec<(RegionSuccessor, Value)> {
+        unreachable!("A store in the body of an `nd_for` is not promoted")
+    }
+
+    fn add_carried_operand(
+        &self,
+        _ctx: &mut Context,
+        _source: RegionBranchPoint,
+        _receivers: &[(RegionSuccessor, Value)],
+        _operand: Value,
+    ) {
+        unreachable!("A store in the body of an `nd_for` is not promoted")
+    }
+}
+
+#[op_interface_impl]
+impl PromotableRegionBranchOpInterface for ExecuteRegionOp {
+    fn permits_store_promotion(&self, _ctx: &Context) -> bool {
+        true
+    }
+
+    fn add_receivers(
+        &self,
+        ctx: &mut Context,
+        successors: &[RegionSuccessor],
+        ty: TypeHandle,
+    ) -> Vec<(RegionSuccessor, Value)> {
+        assert_eq!(successors, [RegionSuccessor::After]);
+        vec![(
+            RegionSuccessor::After,
+            push_result(ctx, self.get_operation(), ty),
+        )]
+    }
+
+    fn add_carried_operand(
+        &self,
+        ctx: &mut Context,
+        source: RegionBranchPoint,
+        _receivers: &[(RegionSuccessor, Value)],
+        operand: Value,
+    ) {
+        let RegionBranchPoint::Terminator(yield_op) = source else {
+            panic!("Only the yield of an `execute_region` can carry values into its results");
+        };
+        Operation::push_operand(yield_op, ctx, operand);
     }
 }
 

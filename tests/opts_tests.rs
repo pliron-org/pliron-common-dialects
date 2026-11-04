@@ -13,8 +13,9 @@ use pliron::{
     location,
     op::{Op, verify_op},
     operation::Operation,
-    opts::{constants::sccp::sccp, dce::dce, simplify_cfg::simplify_cfg},
+    opts::{constants::sccp::sccp, dce::dce, mem2reg::mem2reg, simplify_cfg::simplify_cfg},
     parsable::{self, state_stream_from_iterator},
+    pass::AnalysisManager,
     printable::Printable,
     result::ExpectOk,
 };
@@ -432,4 +433,117 @@ fn test_region_ops_dce() {
             llvm.return f1_v4 !9
         } !10
     }"#]].assert_eq(&module_op.disp(ctx).to_string());
+}
+
+/// Check that mem2reg promotes an allocation that is loaded and stored in the regions
+/// of `cf.for`, `cf.if` and `cf.execute_region`.
+#[test]
+fn test_region_ops_mem2reg() {
+    init_env_logger_for_tests!();
+    let ctx = &mut Context::new();
+
+    let module_op = parse_module(
+        ctx,
+        r#"
+        builtin.module @test_module {
+          ^entry():
+            llvm.func @promote: llvm.func <builtin.fp32 (builtin.integer i64, builtin.integer i1) variadic = false> [] {
+              ^entry(n : builtin.integer i64, cond : builtin.integer i1):
+                one = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64;
+                p = llvm.alloca [builtin.fp32 x one] : llvm.ptr(0);
+                f1 = builtin.constant <builtin.single 1.0> : builtin.fp32;
+                f2 = builtin.constant <builtin.single 2.0> : builtin.fp32;
+                c0 = index.constant <index.constant 0> : index.index;
+                c1 = index.constant <index.constant 1> : index.index;
+                n_idx = index.from_integer n : index.index;
+                llvm.store *p <- f1;
+                cf.for c0 to n_idx step c1 () {
+                    ^entry(iv : index.index):
+                        acc = llvm.load p : builtin.fp32;
+                        next = llvm.fadd <FAST> acc, f1 : builtin.fp32;
+                        llvm.store *p <- next;
+                        cf.yield
+                };
+                cf.if cond -> () {
+                    ^entry():
+                        llvm.store *p <- f2;
+                        cf.yield
+                } else {
+                    ^entry():
+                        cf.yield
+                };
+                cf.execute_region -> () {
+                    ^entry():
+                        cf.cond_br if cond ^on_true() else ^on_false()
+                    ^on_true():
+                        v = llvm.load p : builtin.fp32;
+                        w = llvm.fadd <FAST> v, v : builtin.fp32;
+                        llvm.store *p <- w;
+                        cf.br ^exit()
+                    ^on_false():
+                        cf.br ^exit()
+                    ^exit():
+                        cf.yield
+                };
+                res = llvm.load p : builtin.fp32;
+                llvm.return res
+            }
+        }
+        "#,
+    );
+
+    let mut analyses = AnalysisManager::default();
+    mem2reg(module_op.get_operation(), ctx, &mut analyses).expect_ok(ctx);
+    verify_op(&module_op, ctx).expect_ok(ctx);
+
+    expect![[r#"
+        builtin.module @test_module 
+        {
+          ^entry_block1v1() !0:
+            llvm.func @promote: llvm.func <builtin.fp32 (builtin.integer i64, builtin.integer i1) variadic = false>
+              [] 
+            {
+              ^entry_block2v1(n_v0: builtin.integer i64, cond_v1: builtin.integer i1) !1:
+                one_v2 = builtin.constant <builtin.integer <1: i64>> : builtin.integer i64 !2;
+                f1_v4 = builtin.constant <builtin.single 1> : builtin.fp32  !3;
+                f2_v5 = builtin.constant <builtin.single 2> : builtin.fp32  !4;
+                c0_v6 = index.constant <index.constant 0> : index.index  !5;
+                c1_v7 = index.constant <index.constant 1> : index.index  !6;
+                n_idx_v8 = index.from_integer n_v0 : index.index  !7;
+                p_v17 = cf.for c0_v6 to n_idx_v8 step c1_v7 (f1_v4) 
+                {
+                  ^entry_block3v1(iv_v9: index.index , p_v16: builtin.fp32 ) !8:
+                    next_v11 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> p_v16, f1_v4 : builtin.fp32  !9;
+                    cf.yield next_v11 !10
+                }
+         !11;
+                p_v18 = cf.if cond_v1 -> (builtin.fp32 ) 
+                {
+                  ^entry_block4v1() !12:
+                    cf.yield f2_v5 !13
+                } else 
+                {
+                  ^entry_block5v1() !14:
+                    cf.yield p_v17 !15
+                }
+         !16;
+                p_v19 = cf.execute_region -> (builtin.fp32 ) 
+                {
+                  ^entry_block6v1() !17:
+                    cf.cond_br if cond_v1 ^on_true_block9v1() else ^on_false_block10v1() !18
+
+                  ^on_true_block9v1() !19:
+                    w_v13 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> p_v18, p_v18 : builtin.fp32  !20;
+                    cf.br ^exit_block8v3(w_v13) !21
+
+                  ^on_false_block10v1() !22:
+                    cf.br ^exit_block8v3(p_v18) !23
+
+                  ^exit_block8v3(p_v15: builtin.fp32 ) !24:
+                    cf.yield p_v15 !25
+                }
+         !26;
+                llvm.return p_v19 !27
+            } !28
+        }"#]].assert_eq(&module_op.disp(ctx).to_string());
 }
