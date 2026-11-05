@@ -209,6 +209,21 @@ pub enum NDForOpConversionErr {
     UnsupportedIVType,
 }
 
+// Rewrite pattern:
+// - one nested `ForOp` for each dimension
+// - the original body in the innermost loop
+// - each `ForOp` is lowered by its own rewrite pattern
+//
+//     cf.ndfor (%i, %j) = (%lb0, %lb1) to (%ub0, %ub1) step (%s0, %s1) {
+//       <body>
+//     }
+//
+// becomes:
+//     cf.for %i = %lb0 to %ub0 step %s0 {
+//       cf.for %j = %lb1 to %ub1 step %s1 {
+//         <body>
+//       }
+//     }
 #[op_interface_impl]
 impl ToLLVMDialect for NDForOp {
     fn rewrite(
