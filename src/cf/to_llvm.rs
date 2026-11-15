@@ -241,6 +241,25 @@ impl ToLLVMDialect for NDForOp {
         let yield_op = self.get_yield(ctx, 0);
         rewriter.erase_operation(ctx, yield_op.get_operation());
 
+        if lower_bounds.is_empty() {
+            // The iteration space of a 0-D loop has exactly one point.
+            // So the body runs once. We just inline the body.
+            let body = region
+                .deref(ctx)
+                .get_head()
+                .expect("NDForOp must have a body block");
+            let body_ops: Vec<_> = body.deref(ctx).iter(ctx).collect();
+            for op in body_ops {
+                rewriter.move_operation(
+                    ctx,
+                    op,
+                    OpInsertionPoint::BeforeOperation(self.get_operation()),
+                );
+            }
+            rewriter.erase_operation(ctx, self.get_operation());
+            return Ok(());
+        }
+
         // Iterate over the loop dimensions in reverse order,
         // so that we can create nested loops from the innermost to the outermost.
         let mut lb_ub_st = lower_bounds

@@ -960,6 +960,10 @@ pub enum NDForOpVerifyErr {
         "NDForOp count mismatch: lower bounds, upper bounds, and steps must all have the same number of operands"
     )]
     IterArgsCountMismatch,
+    #[error(
+        "NDForOp's region must take exactly one argument for each loop dimension: expected {expected}, found {found}"
+    )]
+    InductionVarCountMismatch { expected: usize, found: usize },
 }
 
 impl Verify for NDForOp {
@@ -968,11 +972,19 @@ impl Verify for NDForOp {
             return verify_err!(self.loc(ctx), NDForOpVerifyErr::SegmentCountMismatch);
         }
 
-        if self.segment_size(ctx, 0) == 0
-            || self.segment_size(ctx, 0) != self.segment_size(ctx, 1)
+        if self.segment_size(ctx, 0) != self.segment_size(ctx, 1)
             || self.segment_size(ctx, 0) != self.segment_size(ctx, 2)
         {
             return verify_err!(self.loc(ctx), NDForOpVerifyErr::IterArgsCountMismatch);
+        }
+
+        let expected = self.get_lower_bounds(ctx).len();
+        let found = self.get_num_induction_variables(ctx);
+        if expected != found {
+            return verify_err!(
+                self.loc(ctx),
+                NDForOpVerifyErr::InductionVarCountMismatch { expected, found }
+            );
         }
 
         Ok(())
@@ -1330,6 +1342,21 @@ impl RegionBranchOpInterface for NDForOp {
             flows: vec![],
             reads,
         };
+        // A 0-D loop runs its body exactly once.
+        if self.segment_size(ctx, 0) == 0 {
+            return vec![
+                edge(
+                    RegionBranchPoint::Parent,
+                    RegionSuccessor::Region(region),
+                    vec![],
+                ),
+                edge(
+                    RegionBranchPoint::Terminator(yield_op),
+                    RegionSuccessor::After,
+                    vec![],
+                ),
+            ];
+        }
         vec![
             edge(
                 RegionBranchPoint::Parent,
@@ -1708,6 +1735,10 @@ impl RegionBranchOpFoldInterface for NDForOp {
         match point {
             RegionBranchPoint::Parent => {
                 loop_entry_successors(region, self.is_zero_trip(ctx, operand_attrs))
+            }
+            // A 0-D loop runs its body exactly once.
+            RegionBranchPoint::Terminator(_) if self.segment_size(ctx, 0) == 0 => {
+                vec![RegionSuccessor::After]
             }
             RegionBranchPoint::Terminator(_) => {
                 vec![RegionSuccessor::Region(region), RegionSuccessor::After]

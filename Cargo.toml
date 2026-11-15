@@ -12,10 +12,10 @@ keywords = ["pliron", "mlir", "dialect", "compiler"]
 pliron = { git = "https://github.com/pliron-org/pliron.git" }
 pliron-llvm = { git = "https://github.com/pliron-org/pliron.git" }
 thiserror = "2"
-expect-test = "1"
 
 [dev-dependencies]
 env_logger = "0"
+expect-test = "1"
 
 [workspace.metadata.dylint]
 libraries = [
