@@ -87,11 +87,12 @@ fn test_for_op_to_llvm_conversion() {
                     c4 = index.constant <index.constant 4> : index.index;
                     c6 = index.mul c2, c3 : index.index;
                     c10 = index.add c6, c4 : index.index;
+                    c5 = index.divu c10, c2 : index.index;
                     c1 = index.constant <index.constant 1> : index.index;
                     init = builtin.constant <builtin.single 1.0> : builtin.fp32;
                     inc = builtin.constant <builtin.single 3.5> : builtin.fp32;
                     
-                    result = cf.for c0 to c10 step c1 (init) {
+                    result = cf.for c0 to c5 step c1 (init) {
                         ^entry(iv : index.index, iter_arg : builtin.fp32):
                             next = llvm.fadd <FAST> iter_arg, inc : builtin.fp32;
                             cf.yield next
@@ -127,30 +128,31 @@ fn test_for_op_to_llvm_conversion() {
               [] 
             {
               ^entry_block2v1() !1:
-                c0_v25 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
-                c2_v17 = llvm.constant <builtin.integer <2: i64>> : builtin.integer i64 !3;
-                c3_v18 = llvm.constant <builtin.integer <3: i64>> : builtin.integer i64 !4;
-                c4_v20 = llvm.constant <builtin.integer <4: i64>> : builtin.integer i64 !5;
-                c6_v19 = llvm.mul c2_v17, c3_v18 <{nsw=false,nuw=false}>: builtin.integer i64 !6;
-                c10_v21 = llvm.add c6_v19, c4_v20 <{nsw=false,nuw=false}>: builtin.integer i64 !7;
-                c1_v26 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !8;
-                init_v23 = llvm.constant <builtin.single 1> : builtin.fp32  !9;
-                inc_v24 = llvm.constant <builtin.single 3.5> : builtin.fp32  !10;
-                llvm.br ^for_op_header_block5v1(c0_v25, init_v23)
+                c0_v27 = llvm.constant <builtin.integer <0: i64>> : builtin.integer i64 !2;
+                c2_v18 = llvm.constant <builtin.integer <2: i64>> : builtin.integer i64 !3;
+                c3_v19 = llvm.constant <builtin.integer <3: i64>> : builtin.integer i64 !4;
+                c4_v21 = llvm.constant <builtin.integer <4: i64>> : builtin.integer i64 !5;
+                c6_v20 = llvm.mul c2_v18, c3_v19 <{nsw=false,nuw=false}>: builtin.integer i64 !6;
+                c10_v22 = llvm.add c6_v20, c4_v21 <{nsw=false,nuw=false}>: builtin.integer i64 !7;
+                c5_v23 = llvm.udiv c10_v22, c2_v18 : builtin.integer i64 !8;
+                c1_v28 = llvm.constant <builtin.integer <1: i64>> : builtin.integer i64 !9;
+                init_v25 = llvm.constant <builtin.single 1> : builtin.fp32  !10;
+                inc_v26 = llvm.constant <builtin.single 3.5> : builtin.fp32  !11;
+                llvm.br ^for_op_header_block5v1(c0_v27, init_v25)
 
-              ^for_op_header_block5v1(v27: builtin.integer i64, result_v28: builtin.fp32 ) !11:
-                v29 = llvm.icmp v27 <ULT> c10_v21 : builtin.integer i1;
-                llvm.cond_br if v29 ^entry_block3v1(v27, result_v28) else ^entry_split_block4v1()
+              ^for_op_header_block5v1(v29: builtin.integer i64, result_v30: builtin.fp32 ) !12:
+                v31 = llvm.icmp v29 <ULT> c5_v23 : builtin.integer i1;
+                llvm.cond_br if v31 ^entry_block3v1(v29, result_v30) else ^entry_split_block4v1()
 
-              ^entry_block3v1(iv_v10: builtin.integer i64, iter_arg_v11: builtin.fp32 ) !12:
-                next_v12 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v11, inc_v24 : builtin.fp32  !13;
-                v30 = llvm.add iv_v10, c1_v26 <{nsw=false,nuw=false}>: builtin.integer i64;
-                llvm.br ^for_op_header_block5v1(v30, next_v12)
+              ^entry_block3v1(iv_v11: builtin.integer i64, iter_arg_v12: builtin.fp32 ) !13:
+                next_v13 = llvm.fadd <NNAN | NINF | NSZ | ARCP | CONTRACT | AFN | REASSOC> iter_arg_v12, inc_v26 : builtin.fp32  !14;
+                v32 = llvm.add iv_v11, c1_v28 <{nsw=false,nuw=false}>: builtin.integer i64;
+                llvm.br ^for_op_header_block5v1(v32, next_v13)
 
               ^entry_split_block4v1():
-                llvm.return result_v28 !14
-            } !15
-        } !16
+                llvm.return result_v30 !15
+            } !16
+        } !17
 
         outlined_attributes:
         !0 = @[<in-memory>: line: 3, column: 15], []
@@ -161,15 +163,16 @@ fn test_for_op_to_llvm_conversion() {
         !5 = @[<in-memory>: line: 9, column: 21], [builtin_given_names = builtin.given_names [c4]]
         !6 = @[<in-memory>: line: 10, column: 21], [builtin_given_names = builtin.given_names [c6]]
         !7 = @[<in-memory>: line: 11, column: 21], [builtin_given_names = builtin.given_names [c10]]
-        !8 = @[<in-memory>: line: 12, column: 21], [builtin_given_names = builtin.given_names [c1]]
-        !9 = @[<in-memory>: line: 13, column: 21], [builtin_given_names = builtin.given_names [init]]
-        !10 = @[<in-memory>: line: 14, column: 21], [builtin_given_names = builtin.given_names [inc]]
-        !11 = @[<in-memory>: line: 16, column: 21], [builtin_given_names = builtin.given_names [?, result]]
-        !12 = @[<in-memory>: line: 17, column: 25], [builtin_given_names = builtin.given_names [iv, iter_arg]]
-        !13 = @[<in-memory>: line: 18, column: 29], [builtin_given_names = builtin.given_names [next]]
-        !14 = @[<in-memory>: line: 22, column: 21], []
-        !15 = @[<in-memory>: line: 4, column: 17], []
-        !16 = @[<in-memory>: line: 2, column: 13], []
+        !8 = @[<in-memory>: line: 12, column: 21], [builtin_given_names = builtin.given_names [c5]]
+        !9 = @[<in-memory>: line: 13, column: 21], [builtin_given_names = builtin.given_names [c1]]
+        !10 = @[<in-memory>: line: 14, column: 21], [builtin_given_names = builtin.given_names [init]]
+        !11 = @[<in-memory>: line: 15, column: 21], [builtin_given_names = builtin.given_names [inc]]
+        !12 = @[<in-memory>: line: 17, column: 21], [builtin_given_names = builtin.given_names [?, result]]
+        !13 = @[<in-memory>: line: 18, column: 25], [builtin_given_names = builtin.given_names [iv, iter_arg]]
+        !14 = @[<in-memory>: line: 19, column: 29], [builtin_given_names = builtin.given_names [next]]
+        !15 = @[<in-memory>: line: 23, column: 21], []
+        !16 = @[<in-memory>: line: 4, column: 17], []
+        !17 = @[<in-memory>: line: 2, column: 13], []
     "#]].assert_eq(&print_parsed);
 
     let llvm_ctx = LLVMContext::default();
@@ -190,20 +193,20 @@ fn test_for_op_to_llvm_conversion() {
           br label %for_op_header_block5v1
 
         for_op_header_block5v1:                           ; preds = %entry_block3v1, %entry_block2v1
-          %v27 = phi i64 [ 0, %entry_block2v1 ], [ %v30, %entry_block3v1 ]
-          %result_v28 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v12, %entry_block3v1 ]
-          %v29 = icmp ult i64 %v27, 10
-          br i1 %v29, label %entry_block3v1, label %entry_split_block4v1
+          %v29 = phi i64 [ 0, %entry_block2v1 ], [ %v32, %entry_block3v1 ]
+          %result_v30 = phi float [ 1.000000e+00, %entry_block2v1 ], [ %next_v13, %entry_block3v1 ]
+          %v31 = icmp ult i64 %v29, 5
+          br i1 %v31, label %entry_block3v1, label %entry_split_block4v1
 
         entry_block3v1:                                   ; preds = %for_op_header_block5v1
-          %iv_v10 = phi i64 [ %v27, %for_op_header_block5v1 ]
-          %iter_arg_v11 = phi float [ %result_v28, %for_op_header_block5v1 ]
-          %next_v12 = fadd fast float %iter_arg_v11, 3.500000e+00
-          %v30 = add i64 %iv_v10, 1
+          %iv_v11 = phi i64 [ %v29, %for_op_header_block5v1 ]
+          %iter_arg_v12 = phi float [ %result_v30, %for_op_header_block5v1 ]
+          %next_v13 = fadd fast float %iter_arg_v12, 3.500000e+00
+          %v32 = add i64 %iv_v11, 1
           br label %for_op_header_block5v1
 
         entry_split_block4v1:                             ; preds = %for_op_header_block5v1
-          ret float %result_v28
+          ret float %result_v30
         }
     "#]]
     .assert_eq(&llvm_ir.to_string());
@@ -213,7 +216,7 @@ fn test_for_op_to_llvm_conversion() {
     let f =
         unsafe { jit.lookup_symbol::<fn() -> f32>("test_for") }.expect("Failed to lookup symbol");
     let result = f();
-    assert_eq!(result, 36.0);
+    assert_eq!(result, 18.5);
 }
 
 // Test [NDForOp] to LLVM conversion with multiple loop dimensions.

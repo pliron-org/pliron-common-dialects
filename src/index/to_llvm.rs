@@ -24,13 +24,16 @@ use pliron::{
     utils::apint::APInt,
 };
 use pliron_llvm::{
-    ToLLVMDialect, ToLLVMType, attributes::IntegerOverflowFlagsAttr,
-    op_interfaces::IntBinArithOpWithOverflowFlag,
+    ToLLVMDialect, ToLLVMType,
+    attributes::IntegerOverflowFlagsAttr,
+    op_interfaces::{BinArithOp, IntBinArithOpWithOverflowFlag},
 };
 
 use crate::index::{
     attributes::ConstantIndexAttr,
-    ops::{IndexAddOp, IndexConstantOp, IndexMulOp, IndexToIntegerOp, IntegerToIndexOp},
+    ops::{
+        IndexAddOp, IndexConstantOp, IndexDivUOp, IndexMulOp, IndexToIntegerOp, IntegerToIndexOp,
+    },
     types::IndexType,
 };
 
@@ -135,6 +138,25 @@ impl ToLLVMDialect for IndexMulOp {
         );
         rewriter.insert_op(ctx, &mul);
         rewriter.replace_operation(ctx, self.get_operation(), mul.get_operation());
+        Ok(())
+    }
+}
+
+#[op_interface_impl]
+impl ToLLVMDialect for IndexDivUOp {
+    fn rewrite(
+        &self,
+        ctx: &mut Context,
+        rewriter: &mut DialectConversionRewriter,
+        _operands_info: &OperandsInfo,
+    ) -> Result<()> {
+        let (lhs, rhs) = {
+            let op = self.get_operation().deref(ctx);
+            (op.get_operand(0), op.get_operand(1))
+        };
+        let div = pliron_llvm::ops::UDivOp::new(ctx, lhs, rhs);
+        rewriter.insert_op(ctx, &div);
+        rewriter.replace_operation(ctx, self.get_operation(), div.get_operation());
         Ok(())
     }
 }

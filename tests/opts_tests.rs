@@ -58,8 +58,9 @@ fn test_index_ops_sccp_and_dce() {
                 c4 = index.constant <index.constant 4> : index.index;
                 sum = index.add c3, c4 : index.index;
                 prod = index.mul sum, c3 : index.index;
+                quot = index.divu prod, c4 : index.index;
                 max = index.constant <index.constant 18446744073709551615> : index.index;
-                wrapped = index.add max, prod : index.index;
+                wrapped = index.add max, quot : index.index;
                 int = index.to_integer wrapped to builtin.integer i64;
                 idx = index.from_integer int : index.index;
                 res = index.to_integer idx to builtin.integer i64;
@@ -72,6 +73,14 @@ fn test_index_ops_sccp_and_dce() {
                 sum = index.add n_idx, c3 : index.index;
                 res = index.to_integer sum to builtin.integer i64;
                 llvm.return res
+            };
+            llvm.func @index_div_by_zero: llvm.func <builtin.integer i64 () variadic = false> [] {
+              ^entry():
+                c3 = index.constant <index.constant 3> : index.index;
+                c0 = index.constant <index.constant 0> : index.index;
+                quot = index.divu c3, c0 : index.index;
+                res = index.to_integer quot to builtin.integer i64;
+                llvm.return res
             }
         }
         "#,
@@ -82,7 +91,8 @@ fn test_index_ops_sccp_and_dce() {
     dce(module_op.get_operation(), ctx).expect_ok(ctx);
     verify_op(&module_op, ctx).expect_ok(ctx);
 
-    // `@index_fold` must fold to a constant. `@index_no_fold` must remain.
+    // `@index_fold` must fold to a constant.
+    // `@index_no_fold` and `@index_div_by_zero` must not fold.
     expect![[r#"
         builtin.module @test_module 
         {
@@ -91,19 +101,29 @@ fn test_index_ops_sccp_and_dce() {
               [] 
             {
               ^entry_block2v1() !1:
-                res_v19 = builtin.constant <builtin.integer <20: i64>> : builtin.integer i64 !2;
-                llvm.return res_v19 !3
+                res_v25 = builtin.constant <builtin.integer <4: i64>> : builtin.integer i64 !2;
+                llvm.return res_v25 !3
             } !4;
             llvm.func @index_no_fold: llvm.func <builtin.integer i64(builtin.integer i64) variadic = false>
               [] 
             {
-              ^entry_block3v1(n_v9: builtin.integer i64) !5:
-                c3_v10 = index.constant <index.constant 3> : index.index  !6;
-                n_idx_v11 = index.from_integer n_v9 : index.index  !7;
-                sum_v12 = index.add n_idx_v11, c3_v10 : index.index  !8;
-                res_v13 = index.to_integer sum_v12 to builtin.integer i64 !9;
-                llvm.return res_v13 !10
-            } !11
+              ^entry_block3v1(n_v10: builtin.integer i64) !5:
+                c3_v11 = index.constant <index.constant 3> : index.index  !6;
+                n_idx_v12 = index.from_integer n_v10 : index.index  !7;
+                sum_v13 = index.add n_idx_v12, c3_v11 : index.index  !8;
+                res_v14 = index.to_integer sum_v13 to builtin.integer i64 !9;
+                llvm.return res_v14 !10
+            } !11;
+            llvm.func @index_div_by_zero: llvm.func <builtin.integer i64() variadic = false>
+              [] 
+            {
+              ^entry_block4v1() !12:
+                c3_v15 = index.constant <index.constant 3> : index.index  !13;
+                c0_v16 = index.constant <index.constant 0> : index.index  !14;
+                quot_v17 = index.divu c3_v15, c0_v16 : index.index  !15;
+                res_v18 = index.to_integer quot_v17 to builtin.integer i64 !16;
+                llvm.return res_v18 !17
+            } !18
         }"#]].assert_eq(&module_op.disp(ctx).to_string());
 }
 

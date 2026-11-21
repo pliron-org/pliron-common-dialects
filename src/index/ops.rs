@@ -174,20 +174,45 @@ impl IndexMulOp {
     }
 }
 
+/// Unsigned division of two [IndexType] values, rounded toward zero.
+///
+/// Division by zero is undefined behavior.
+#[pliron_op(
+    name = "index.divu",
+    interfaces = [
+        NOpdsInterface<2>,
+        OneResultInterface,
+        AllOperandsOfType<IndexType>,
+        AllResultsOfType<IndexType>,
+    ],
+    format = "$0 `, ` $1 ` : ` type($0)",
+    verifier = "succ",
+)]
+pub struct IndexDivUOp;
+
+impl IndexDivUOp {
+    /// Create a new IndexDivUOp to compute `lhs / rhs`.
+    pub fn new(ctx: &mut Context, lhs: Value, rhs: Value) -> Self {
+        let result_ty = IndexType::get(ctx).into();
+        Operation::new_op::<Self>(ctx, vec![result_ty], vec![lhs, rhs], vec![], 0)
+    }
+}
+
 /// Bit width (post lowering to LLVM integer) of [IndexType] values.
 const INDEX_BITWIDTH: NonZero<usize> = NonZero::new(64).unwrap();
 
 /// Fold a binary [IndexType] op on constant operands with `combine`.
 fn check_fold_index_bin_op(
     operand_attrs: &[Option<AttrObj>],
-    combine: fn(u64, u64) -> u64,
+    combine: fn(u64, u64) -> Option<u64>,
 ) -> Vec<Option<AttrObj>> {
     let [lhs, rhs] = operand_attrs else {
         panic!("A binary index op must have two operands");
     };
     let folded = known_constant_index(lhs)
         .zip(known_constant_index(rhs))
-        .and_then(|(lhs, rhs)| ConstantIndexAttr::from_u64(combine(lhs, rhs)))
+        .and_then(|(lhs, rhs)| combine(lhs, rhs))
+        .and_then(ConstantIndexAttr::from_u64)
         .map(|attr| Box::new(attr) as AttrObj);
     vec![folded]
 }
@@ -277,7 +302,7 @@ impl ConstFoldInterface for IndexAddOp {
         _ctx: &Context,
         operand_attrs: &[Option<AttrObj>],
     ) -> Vec<Option<AttrObj>> {
-        check_fold_index_bin_op(operand_attrs, u64::wrapping_add)
+        check_fold_index_bin_op(operand_attrs, |lhs, rhs| Some(lhs.wrapping_add(rhs)))
     }
 
     fn fold_in_place(
@@ -297,7 +322,28 @@ impl ConstFoldInterface for IndexMulOp {
         _ctx: &Context,
         operand_attrs: &[Option<AttrObj>],
     ) -> Vec<Option<AttrObj>> {
-        check_fold_index_bin_op(operand_attrs, u64::wrapping_mul)
+        check_fold_index_bin_op(operand_attrs, |lhs, rhs| Some(lhs.wrapping_mul(rhs)))
+    }
+
+    fn fold_in_place(
+        &self,
+        ctx: &mut Context,
+        operand_attrs: &[Option<AttrObj>],
+        rewriter: &mut dyn Rewriter,
+    ) -> IRStatus {
+        self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+#[op_interface_impl]
+impl ConstFoldInterface for IndexDivUOp {
+    fn check_fold(
+        &self,
+        _ctx: &Context,
+        operand_attrs: &[Option<AttrObj>],
+    ) -> Vec<Option<AttrObj>> {
+        // `checked_div` doesn't division by zero (undefined behavior).
+        check_fold_index_bin_op(operand_attrs, u64::checked_div)
     }
 
     fn fold_in_place(
@@ -316,4 +362,5 @@ impl_no_self_side_effects!(
     IntegerToIndexOp,
     IndexAddOp,
     IndexMulOp,
+    IndexDivUOp,
 );
