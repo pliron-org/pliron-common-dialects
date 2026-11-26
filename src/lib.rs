@@ -19,5 +19,6 @@ macro_rules! impl_no_self_side_effects {
     };
 }
 
+pub mod arith;
 pub mod cf;
 pub mod index;
