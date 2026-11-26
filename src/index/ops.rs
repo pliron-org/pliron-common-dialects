@@ -21,7 +21,7 @@ use pliron::{
     irbuild::{IRStatus, rewriter::Rewriter},
     op::Op,
     operation::Operation,
-    opts::constants::ConstFoldInterface,
+    opts::{canonicalize::CanonicalizeInterface, constants::ConstFoldInterface},
     result::Result,
     utils::apint::APInt,
     value::Value,
@@ -353,6 +353,113 @@ impl ConstFoldInterface for IndexDivUOp {
         rewriter: &mut dyn Rewriter,
     ) -> IRStatus {
         self.fold_with_materialization(ctx, operand_attrs, rewriter)
+    }
+}
+
+/// Try and match `value` to a constant index.
+pub fn try_match_constant_index(ctx: &Context, value: Value) -> Option<u64> {
+    let def = value.defining_op()?;
+    let const_op = Operation::get_op::<IndexConstantOp>(def, ctx)?;
+    let attr = const_op.get_attr_constant_index(ctx)?;
+    Some(attr.to_u64())
+}
+
+/// - For a constant `c`, `add c, x` canonicalizes to `add x, c`.
+/// - `add x, 0` simplifies to `x`.
+#[op_interface_impl]
+impl CanonicalizeInterface for IndexAddOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let op = self.get_operation();
+        let lhs = op.deref(ctx).get_operand(0);
+        let rhs = op.deref(ctx).get_operand(1);
+        match (
+            try_match_constant_index(ctx, lhs),
+            try_match_constant_index(ctx, rhs),
+        ) {
+            (Some(_), None) => {
+                Operation::replace_operand(op, ctx, 0, rhs);
+                Operation::replace_operand(op, ctx, 1, lhs);
+                rewriter.notify_operation_modified(ctx, op);
+            }
+            (_, Some(0)) => rewriter.replace_operation_with_values(ctx, op, vec![lhs]),
+            _ => return IRStatus::Unchanged,
+        }
+        IRStatus::Changed
+    }
+}
+
+/// - For a constant `c`, `mul c, x` canonicalizes to `mul x, c`.
+/// - `mul x, 1` simplifies to `x`.
+/// - `mul x, 0` simplifies to `0`.
+#[op_interface_impl]
+impl CanonicalizeInterface for IndexMulOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let op = self.get_operation();
+        let lhs = op.deref(ctx).get_operand(0);
+        let rhs = op.deref(ctx).get_operand(1);
+        match (
+            try_match_constant_index(ctx, lhs),
+            try_match_constant_index(ctx, rhs),
+        ) {
+            (Some(_), None) => {
+                Operation::replace_operand(op, ctx, 0, rhs);
+                Operation::replace_operand(op, ctx, 1, lhs);
+                rewriter.notify_operation_modified(ctx, op);
+            }
+            (_, Some(1)) => rewriter.replace_operation_with_values(ctx, op, vec![lhs]),
+            (_, Some(0)) => rewriter.replace_operation_with_values(ctx, op, vec![rhs]),
+            _ => return IRStatus::Unchanged,
+        }
+        IRStatus::Changed
+    }
+}
+
+/// `divu x, 1` simplifies to `x`.
+#[op_interface_impl]
+impl CanonicalizeInterface for IndexDivUOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let op = self.get_operation();
+        let rhs = op.deref(ctx).get_operand(1);
+        if try_match_constant_index(ctx, rhs) != Some(1) {
+            return IRStatus::Unchanged;
+        }
+        let lhs = op.deref(ctx).get_operand(0);
+        rewriter.replace_operation_with_values(ctx, op, vec![lhs]);
+        IRStatus::Changed
+    }
+}
+
+/// `index.to_integer (index.from_integer x)` simplifies to `x`.
+#[op_interface_impl]
+impl CanonicalizeInterface for IndexToIntegerOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let Some(from_integer) = self
+            .get_operand(ctx)
+            .defining_op()
+            .and_then(|def| Operation::get_op::<IntegerToIndexOp>(def, ctx))
+        else {
+            return IRStatus::Unchanged;
+        };
+        let int = from_integer.get_operand(ctx);
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![int]);
+        IRStatus::Changed
+    }
+}
+
+/// `index.from_integer (index.to_integer x)` simplifies to `x`.
+#[op_interface_impl]
+impl CanonicalizeInterface for IntegerToIndexOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let Some(to_integer) = self
+            .get_operand(ctx)
+            .defining_op()
+            .and_then(|def| Operation::get_op::<IndexToIntegerOp>(def, ctx))
+        else {
+            return IRStatus::Unchanged;
+        };
+        let index = to_integer.get_operand(ctx);
+        rewriter.replace_operation_with_values(ctx, self.get_operation(), vec![index]);
+        IRStatus::Changed
     }
 }
 

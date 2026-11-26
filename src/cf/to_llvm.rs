@@ -248,14 +248,12 @@ impl ToLLVMDialect for NDForOp {
                 .deref(ctx)
                 .get_head()
                 .expect("NDForOp must have a body block");
-            let body_ops: Vec<_> = body.deref(ctx).iter(ctx).collect();
-            for op in body_ops {
-                rewriter.move_operation(
-                    ctx,
-                    op,
-                    OpInsertionPoint::BeforeOperation(self.get_operation()),
-                );
-            }
+            rewriter.inline_block(
+                ctx,
+                body,
+                OpInsertionPoint::BeforeOperation(self.get_operation()),
+                &[],
+            );
             rewriter.erase_operation(ctx, self.get_operation());
             return Ok(());
         }
@@ -426,22 +424,15 @@ impl ToLLVMDialect for ExecuteRegionOp {
 
         // Split so that this op (and everything after it) moves into a new
         // continuation block, which accepts the region's results as arguments.
-        let continuation = {
-            let mut scoped = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
-            let continuation = scoped.create_block(
-                ctx,
-                BlockInsertionPoint::AfterBlock(pre_block),
-                None,
-                result_types,
-            );
-            let mut current_op_opt = Some(self_op);
-            while let Some(current_op) = current_op_opt {
-                let next_op = current_op.deref(ctx).get_next();
-                scoped.move_operation(ctx, current_op, OpInsertionPoint::AtBlockEnd(continuation));
-                current_op_opt = next_op;
-            }
-            continuation
-        };
+        let continuation = rewriter.split_block(
+            ctx,
+            pre_block,
+            OpInsertionPoint::BeforeOperation(self_op),
+            None,
+        );
+        for ty in result_types {
+            BasicBlock::push_argument(continuation, ctx, ty);
+        }
         let continuation_args = continuation.deref(ctx).arguments().collect::<Vec<_>>();
 
         // The exit block of the region must branch to the continuation,
@@ -519,22 +510,15 @@ impl ToLLVMDialect for IfOp {
 
         // Split so that this op (and everything after it) moves into a new
         // continuation block, which accepts this op's (merged) results as arguments.
-        let continuation = {
-            let mut scoped = ScopedRewriter::new(rewriter, OpInsertionPoint::Unset);
-            let continuation = scoped.create_block(
-                ctx,
-                BlockInsertionPoint::AfterBlock(pre_block),
-                None,
-                result_types,
-            );
-            let mut current_op_opt = Some(self_op);
-            while let Some(current_op) = current_op_opt {
-                let next_op = current_op.deref(ctx).get_next();
-                scoped.move_operation(ctx, current_op, OpInsertionPoint::AtBlockEnd(continuation));
-                current_op_opt = next_op;
-            }
-            continuation
-        };
+        let continuation = rewriter.split_block(
+            ctx,
+            pre_block,
+            OpInsertionPoint::BeforeOperation(self_op),
+            None,
+        );
+        for ty in result_types {
+            BasicBlock::push_argument(continuation, ctx, ty);
+        }
         let continuation_args = continuation.deref(ctx).arguments().collect::<Vec<_>>();
 
         // The exit block of the `then` region must branch to the continuation,

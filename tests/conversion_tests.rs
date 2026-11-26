@@ -655,9 +655,9 @@ fn test_execute_region_op_to_llvm_conversion() {
                 llvm.br ^exit_block6v1(tmp_v9) !11
 
               ^exit_block6v1(v_v10: builtin.fp32 ) !12:
-                llvm.br ^block8v1(v_v10)
+                llvm.br ^entry_split_block8v1(v_v10)
 
-              ^block8v1(next_v23: builtin.fp32 ) !13:
+              ^entry_split_block8v1(next_v23: builtin.fp32 ) !13:
                 v22 = llvm.add iv_v6, c1_v18 <{nsw=false,nuw=false}>: builtin.integer i64;
                 llvm.br ^for_op_header_block7v1(v22, next_v23)
 
@@ -914,12 +914,12 @@ fn test_if_op_with_else_to_llvm_conversion() {
                 llvm.cond_br if cond_v2 ^entry_block3v1() else ^entry_block4v1()
 
               ^entry_block3v1() !7:
-                llvm.br ^block5v1(true_val_v8)
+                llvm.br ^entry_split_block5v1(true_val_v8)
 
               ^entry_block4v1() !8:
-                llvm.br ^block5v1(false_val_v9)
+                llvm.br ^entry_split_block5v1(false_val_v9)
 
-              ^block5v1(result_v10: builtin.fp32 ) !9:
+              ^entry_split_block5v1(result_v10: builtin.fp32 ) !9:
                 llvm.return result_v10 !10
             } !11
         }"#]]
@@ -1045,12 +1045,12 @@ fn test_if_op_without_else_to_llvm_conversion() {
                 cond_v2 = llvm.icmp zero_v5 <ULT> one_v6 : builtin.integer i1 !4;
                 unused_v7 = llvm.constant <builtin.single 9> : builtin.fp32  !5;
                 result_v8 = llvm.constant <builtin.single 42> : builtin.fp32  !6;
-                llvm.cond_br if cond_v2 ^entry_block3v1() else ^block4v1()
+                llvm.cond_br if cond_v2 ^entry_block3v1() else ^entry_split_block4v1()
 
               ^entry_block3v1() !7:
-                llvm.br ^block4v1()
+                llvm.br ^entry_split_block4v1()
 
-              ^block4v1():
+              ^entry_split_block4v1():
                 llvm.return result_v8 !8
             } !9
         }"#]]
@@ -1184,15 +1184,15 @@ fn test_if_op_execute_region_in_then_branch_to_llvm_conversion() {
                 llvm.br ^next_block6v1(inc_v10) !9
 
               ^next_block6v1(w_v7: builtin.fp32 ) !10:
-                llvm.br ^block8v1(w_v7)
+                llvm.br ^entry_split_block8v1(w_v7)
 
-              ^block8v1(v_v13: builtin.fp32 ) !11:
-                llvm.br ^block7v1(v_v13)
+              ^entry_split_block8v1(v_v13: builtin.fp32 ) !11:
+                llvm.br ^entry_split_block7v1(v_v13)
 
               ^entry_block5v3() !12:
-                llvm.br ^block7v1(false_val_v11)
+                llvm.br ^entry_split_block7v1(false_val_v11)
 
-              ^block7v1(result_v12: builtin.fp32 ) !13:
+              ^entry_split_block7v1(result_v12: builtin.fp32 ) !13:
                 llvm.return result_v12 !14
             } !15
         }"#]]

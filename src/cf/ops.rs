@@ -38,11 +38,12 @@ use pliron::{
         },
         printers::{iter_with_sep, list_with_sep},
     },
-    linked_list::{ContainsLinkedList, LinkedList},
+    linked_list::ContainsLinkedList,
     location::Location,
     op::{Op, OpObj},
     operation::Operation,
     opts::{
+        canonicalize::CanonicalizeInterface,
         constants::{BranchOpFoldInterface, RegionBranchOpFoldInterface},
         mem2reg::PromotableRegionBranchOpInterface,
     },
@@ -65,7 +66,7 @@ use pliron_llvm::attributes::{PoisonAttr, UndefAttr};
 
 use crate::{
     cf::op_interfaces::{YieldingOp, YieldingRegions},
-    index::{attributes::known_constant_index, types::IndexType},
+    index::{attributes::known_constant_index, ops::try_match_constant_index, types::IndexType},
 };
 
 #[derive(thiserror::Error, Debug)]
@@ -1559,12 +1560,28 @@ impl_no_self_side_effects!(
     NDForOp
 );
 
-/// For a loop over `[lb, ub)`, returns
-/// - `Some(true)` if the loop has zero iterations
-/// - `Some(false)` if the loop has one or more iterations
-/// - `None` if `lb` or `ub` is not known
-fn is_zero_trip_bounds(lb: Option<u64>, ub: Option<u64>) -> Option<bool> {
-    Some(lb? >= ub?)
+/// Loop properties computed from constant bounds and steps.
+mod bounds {
+    /// For a loop over `[lb, ub)`, returns
+    /// - `Some(true)` if the loop has zero iterations
+    /// - `Some(false)` if the loop has one or more iterations
+    /// - `None` if `lb` or `ub` is not known
+    pub(super) fn is_zero_trip(lb: Option<u64>, ub: Option<u64>) -> Option<bool> {
+        Some(lb? >= ub?)
+    }
+
+    /// Number of iterations of a loop over `[lb, ub)` with `step`.
+    pub(super) fn trip_count(lb: Option<u64>, ub: Option<u64>, step: Option<u64>) -> Option<u64> {
+        if is_zero_trip(lb, ub)? {
+            return Some(0);
+        }
+        let (lb, ub) = (lb?, ub?);
+        let step = step.filter(|step| *step != 0)?;
+        let count = (ub - lb).div_ceil(step);
+        // The loop continues if its induction variable wraps after the last iteration.
+        lb.checked_add(count.checked_mul(step)?)?;
+        Some(count)
+    }
 }
 
 /// Possible successors of a loop's entry, given whether it `is_zero_trip`.
@@ -1611,8 +1628,8 @@ impl RegionBranchOpFoldInterface for IfOp {
         }
     }
 
-    // Replace this op with the operations of the region that the
-    // condition selects, or erase this op if no region is selected.
+    // Replace this op with the selected region's operations.
+    // Erase this op if no region is selected.
     fn fold_in_place(
         &self,
         ctx: &mut Context,
@@ -1631,13 +1648,9 @@ impl RegionBranchOpFoldInterface for IfOp {
 
         let yield_op = self.get_yield(ctx, reg_idx).get_operation();
         let yielded: Vec<Value> = yield_op.deref(ctx).operands().collect();
-        let mut cur = self.get_entry(ctx, reg_idx).deref(ctx).get_head();
-        while let Some(inner) = cur
-            && inner != yield_op
-        {
-            cur = inner.deref(ctx).get_next();
-            rewriter.move_operation(ctx, inner, OpInsertionPoint::BeforeOperation(op));
-        }
+        rewriter.erase_operation(ctx, yield_op);
+        let entry = self.get_entry(ctx, reg_idx);
+        rewriter.inline_block(ctx, entry, OpInsertionPoint::BeforeOperation(op), &[]);
         rewriter.replace_operation_with_values(ctx, op, yielded);
         IRStatus::Changed
     }
@@ -1650,7 +1663,7 @@ impl ForOp {
     /// - `None` if this is not known
     fn is_zero_trip(&self, ctx: &Context, operand_attrs: &[Option<AttrObj>]) -> Option<bool> {
         let start = self.segment_range(ctx, 0).start;
-        is_zero_trip_bounds(
+        bounds::is_zero_trip(
             known_constant_index(&operand_attrs[start]),
             known_constant_index(&operand_attrs[start + 1]),
         )
@@ -1703,7 +1716,7 @@ impl NDForOp {
             .segment_range(ctx, 0)
             .zip(self.segment_range(ctx, 1))
             .map(|(lb, ub)| {
-                is_zero_trip_bounds(
+                bounds::is_zero_trip(
                     known_constant_index(&operand_attrs[lb]),
                     known_constant_index(&operand_attrs[ub]),
                 )
@@ -1854,6 +1867,191 @@ impl BranchOpFoldInterface for CondBrOp {
         let br_op = BrOp::new(ctx, dest, dest_opds).get_operation();
         rewriter.insert_operation(ctx, br_op);
         rewriter.replace_operation(ctx, op, br_op);
+        IRStatus::Changed
+    }
+}
+
+/// Does a loop over `[lb, ub)` with `step` have exactly one iteration?
+fn is_single_trip(ctx: &Context, lb: Value, ub: Value, step: Value) -> bool {
+    bounds::trip_count(
+        try_match_constant_index(ctx, lb),
+        try_match_constant_index(ctx, ub),
+        try_match_constant_index(ctx, step),
+    ) == Some(1)
+}
+
+// Try to simplify a `cond_br` to a `br`.
+#[op_interface_impl]
+impl CanonicalizeInterface for CondBrOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let op = self.get_operation();
+        let dest = op.deref(ctx).get_successor(0);
+        let dest_opds = self.successor_operands(ctx, 0);
+        if dest != op.deref(ctx).get_successor(1) || dest_opds != self.successor_operands(ctx, 1) {
+            // The two successors or the values that we pass to them are different.
+            return IRStatus::Unchanged;
+        }
+        let br_op = BrOp::new(ctx, dest, dest_opds).get_operation();
+        rewriter.insert_operation(ctx, br_op);
+        rewriter.replace_operation(ctx, op, br_op);
+        IRStatus::Changed
+    }
+}
+
+// Try to remove unused results and empty regions of an `if`, or erase it.
+#[op_interface_impl]
+impl CanonicalizeInterface for IfOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let op = self.get_operation();
+        let mut status = IRStatus::Unchanged;
+
+        if let Some(else_yield) = self.get_else_yield(ctx) {
+            let then_yield = self.get_then_yield(ctx).get_operation();
+            let else_yield = else_yield.get_operation();
+            let num_results = op.deref(ctx).get_num_results();
+            for res_idx in (0..num_results).rev() {
+                let result = op.deref(ctx).get_result(res_idx);
+                if result.is_used(ctx) {
+                    let then_value = then_yield.deref(ctx).get_operand(res_idx);
+                    if then_value != else_yield.deref(ctx).get_operand(res_idx) {
+                        continue;
+                    }
+                    // Both regions yield the same value for `result`.
+                    // Replace `result` with that value.
+                    rewriter.replace_value_uses_with(ctx, result, then_value);
+                }
+
+                // If it wasn't already, the replacement above makes `result` unused.
+                Operation::remove_result(op, ctx, res_idx);
+                Operation::remove_operand(then_yield, ctx, res_idx);
+                Operation::remove_operand(else_yield, ctx, res_idx);
+                rewriter.notify_operation_modified(ctx, then_yield);
+                rewriter.notify_operation_modified(ctx, else_yield);
+                rewriter.notify_operation_modified(ctx, op);
+                status = IRStatus::Changed;
+            }
+        }
+
+        if op.deref(ctx).get_num_results() > 0 {
+            // We have results with uses. Nothing more to do.
+            return status;
+        }
+
+        /// Does `block` contain only its terminator?
+        fn has_only_terminator(ctx: &Context, block: Ptr<BasicBlock>) -> bool {
+            let block = block.deref(ctx);
+            block.get_head().is_some() && block.get_head() == block.get_tail()
+        }
+
+        // An `else` region containing only its `yield` can be removed.
+        if let (Some(else_region), Some(else_entry)) =
+            (self.get_else_region(ctx), self.get_else_entry(ctx))
+            && has_only_terminator(ctx, else_entry)
+        {
+            rewriter.erase_region(ctx, else_region);
+            rewriter.notify_operation_modified(ctx, op);
+            status = IRStatus::Changed;
+        }
+
+        // With no `else` region, if the `then` region contains only its `yield`,
+        // the entire `if` can be removed.
+        if !self.has_else_region(ctx) && has_only_terminator(ctx, self.get_then_entry(ctx)) {
+            rewriter.erase_operation(ctx, op);
+            return IRStatus::Changed;
+        }
+
+        status
+    }
+}
+
+// Try to inline a loop with one iteration, or remove its invariant and unused
+// loop-carried variables.
+#[op_interface_impl]
+impl CanonicalizeInterface for ForOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let op = self.get_operation();
+        let entry = self.get_entry(ctx, 0);
+        let yield_op = self.get_yield(ctx, 0).get_operation();
+        let inits = self.get_iter_args_init(ctx);
+
+        // A loop with exactly one iteration is replaced by its body.
+        let lb = self.get_lower_bound(ctx);
+        if is_single_trip(ctx, lb, self.get_upper_bound(ctx), self.get_step(ctx)) {
+            let args: Vec<Value> = std::iter::once(lb).chain(inits).collect();
+            let yielded: Vec<Value> = yield_op.deref(ctx).operands().collect();
+            rewriter.erase_operation(ctx, yield_op);
+            rewriter.inline_block(ctx, entry, OpInsertionPoint::BeforeOperation(op), &args);
+            rewriter.replace_operation_with_values(ctx, op, yielded);
+            return IRStatus::Changed;
+        }
+
+        // Try to remove invariant and unused loop-carried variables.
+        let mut status = IRStatus::Unchanged;
+        for (iter_arg_idx, init) in inits.into_iter().enumerate().rev() {
+            // The first block argument is the induction variable.
+            let carried = entry.deref(ctx).get_argument(iter_arg_idx + 1);
+            let result = op.deref(ctx).get_result(iter_arg_idx);
+            let yielded = yield_op.deref(ctx).get_operand(iter_arg_idx);
+            // A loop-carried variable whose yielded value is the variable itself,
+            // or its initial value, is replaced by its initial value.
+            if yielded == carried || yielded == init {
+                rewriter.replace_value_uses_with(ctx, carried, init);
+                rewriter.replace_value_uses_with(ctx, result, init);
+            }
+            if carried.is_used(ctx) || result.is_used(ctx) {
+                // Nothing more to do.
+                continue;
+            }
+            // The loop-carried variable and its corresponding result are both unused.
+            Operation::remove_result(op, ctx, iter_arg_idx);
+            BasicBlock::remove_argument(entry, ctx, iter_arg_idx + 1);
+            Operation::remove_operand(yield_op, ctx, iter_arg_idx);
+            self.remove_from_segment(ctx, 1, iter_arg_idx);
+            rewriter.notify_operation_modified(ctx, yield_op);
+            rewriter.notify_operation_modified(ctx, op);
+            status = IRStatus::Changed;
+        }
+        status
+    }
+}
+
+/// A loop with exactly one iteration is replaced by its body.
+#[op_interface_impl]
+impl CanonicalizeInterface for NDForOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let lbs = self.get_lower_bounds(ctx);
+        let single_trip = lbs
+            .iter()
+            .zip(self.get_upper_bounds(ctx))
+            .zip(self.get_steps(ctx))
+            .all(|((lb, ub), step)| is_single_trip(ctx, *lb, ub, step));
+        if !single_trip {
+            return IRStatus::Unchanged;
+        }
+        let op = self.get_operation();
+        let yield_op = self.get_yield(ctx, 0).get_operation();
+        rewriter.erase_operation(ctx, yield_op);
+        let entry = self.get_entry(ctx, 0);
+        rewriter.inline_block(ctx, entry, OpInsertionPoint::BeforeOperation(op), &lbs);
+        rewriter.erase_operation(ctx, op);
+        IRStatus::Changed
+    }
+}
+
+/// An `execute_region` with a single block is replaced by the operations of that block.
+#[op_interface_impl]
+impl CanonicalizeInterface for ExecuteRegionOp {
+    fn canonicalize(&self, ctx: &mut Context, rewriter: &mut dyn Rewriter) -> IRStatus {
+        let entry = self.get_entry(ctx, 0);
+        if self.get_exit(ctx, 0) != entry {
+            return IRStatus::Unchanged;
+        }
+        let op = self.get_operation();
+        let yield_op = self.get_yield(ctx, 0).get_operation();
+        let yielded: Vec<Value> = yield_op.deref(ctx).operands().collect();
+        rewriter.erase_operation(ctx, yield_op);
+        rewriter.inline_block(ctx, entry, OpInsertionPoint::BeforeOperation(op), &[]);
+        rewriter.replace_operation_with_values(ctx, op, yielded);
         IRStatus::Changed
     }
 }
